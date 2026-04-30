@@ -76,7 +76,6 @@ class MainActivity : Activity() {
     private lateinit var statusSpinner: Spinner
 
     private val handler = Handler(Looper.getMainLooper())
-
     private val nodeName = "Node-${UUID.randomUUID().toString().take(4)}"
 
     private val connectedEndpoints = mutableSetOf<String>()
@@ -133,8 +132,8 @@ class MainActivity : Activity() {
     }
 
     private fun requestPermissionsIfNeeded() {
-        val missingPermissions = requiredPermissions().filter {
-            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        val missingPermissions = requiredPermissions().filter { permission ->
+            checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED
         }
 
         if (missingPermissions.isNotEmpty()) {
@@ -195,6 +194,7 @@ class MainActivity : Activity() {
                     "Fix Bluetooth, Wi-Fi, Location, and permissions first",
                     Toast.LENGTH_LONG
                 ).show()
+
                 refreshReadinessUi()
                 return@setOnClickListener
             }
@@ -232,7 +232,7 @@ class MainActivity : Activity() {
 
         val note = TextView(this)
         note.text =
-            "Nearby relay may fail silently if Bluetooth, Wi-Fi, Location, or permissions are off. Battery saver may reduce reliability."
+            "Nearby relay may fail if Bluetooth, Wi-Fi, Location, or permissions are off. Battery saver may reduce reliability."
         note.textSize = 14f
         note.setTextColor(Color.DKGRAY)
         note.setPadding(0, 20, 0, 0)
@@ -264,7 +264,6 @@ class MainActivity : Activity() {
         if (!::readinessText.isInitialized) return
 
         val readiness = getDeviceReadiness()
-
         val text = StringBuilder()
 
         text.append(statusLine("Bluetooth", readiness.bluetoothOn, "ON", "OFF"))
@@ -273,9 +272,9 @@ class MainActivity : Activity() {
         text.append(statusLine("Nearby permissions", readiness.permissionsGranted, "Granted", "Missing"))
 
         if (readiness.batterySaverOff) {
-            text.append("✅ Battery saver: OFF\n")
+            text.append("OK Battery saver: OFF\n")
         } else {
-            text.append("⚠️ Battery saver: ON — relay may be unreliable\n")
+            text.append("WARNING Battery saver: ON - relay may be unreliable\n")
         }
 
         text.append("\nNode name: $nodeName\n")
@@ -302,16 +301,17 @@ class MainActivity : Activity() {
         failText: String
     ): String {
         return if (ok) {
-            "✅ $label: $okText\n"
+            "OK $label: $okText\n"
         } else {
-            "❌ $label: $failText\n"
+            "NO $label: $failText\n"
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun getDeviceReadiness(): DeviceReadiness {
         val bluetoothOn = try {
-            BluetoothAdapter.getDefaultAdapter()?.isEnabled == true
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            adapter != null && adapter.isEnabled
         } catch (e: Exception) {
             false
         }
@@ -319,6 +319,7 @@ class MainActivity : Activity() {
         val wifiOn = try {
             val wifiManager =
                 applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+
             wifiManager.isWifiEnabled
         } catch (e: Exception) {
             false
@@ -328,19 +329,26 @@ class MainActivity : Activity() {
             val locationManager =
                 getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                    locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            val networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+
+            gpsEnabled || networkEnabled
         } catch (e: Exception) {
             false
         }
 
-        val permissionsGranted = requiredPermissions().all {
-            checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        val permissionsGranted = requiredPermissions().all { permission ->
+            checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
         }
 
         val batterySaverOff = try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            !powerManager.isPowerSaveMode
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                !powerManager.isPowerSaveMode
+            } else {
+                true
+            }
         } catch (e: Exception) {
             true
         }
@@ -489,11 +497,6 @@ class MainActivity : Activity() {
             endpointStates[endpointId] = PeerState.DISCOVERED
             updatePeerStateUi()
 
-            /*
-             * Tie-breaker:
-             * Both phones advertise and discover at the same time.
-             * Only the lower node name initiates. The other waits and accepts.
-             */
             if (nodeName > info.endpointName) {
                 addLog("Found ${info.endpointName}; waiting for peer to connect")
                 return
@@ -714,15 +717,17 @@ class MainActivity : Activity() {
 
         val job = relayQueue.removeAt(0)
 
-        val targets = connectedEndpoints.filter {
-            it != job.exceptEndpointId
+        val targets = connectedEndpoints.filter { endpointId ->
+            endpointId != job.exceptEndpointId
         }
 
         if (targets.isEmpty()) {
             addLog("No peers available for ${priorityLabel(job.packet.priority)} packet")
+
             handler.postDelayed({
                 processNextRelayJob()
             }, 250)
+
             return
         }
 
@@ -951,10 +956,8 @@ class MainActivity : Activity() {
     }
 
     private fun runDemoMode() {
-        val demoMessageId = UUID.randomUUID().toString()
-
         val demoPacket = SosPacket(
-            messageId = demoMessageId,
+            messageId = UUID.randomUUID().toString(),
             senderName = "Demo Phone A",
             status = "Need Medical Help",
             message = "Person injured and needs urgent support",
@@ -989,24 +992,24 @@ class MainActivity : Activity() {
         }, 2100)
 
         handler.postDelayed({
-            addLog("DEMO: Duplicate packet returns to A → ignored by messageId")
+            addLog("DEMO: Duplicate packet returns to A - ignored by messageId")
         }, 2800)
 
         handler.postDelayed({
-            addLog("DEMO COMPLETE: A → B → C relay path simulated")
+            addLog("DEMO COMPLETE: A to B to C relay path simulated")
         }, 3500)
     }
 
     private fun loadAlertsFromDatabase() {
-        val storedAlerts = database.alertDao().getAll().map {
-            it.toPacket()
+        val storedAlerts = database.alertDao().getAll().map { entity ->
+            entity.toPacket()
         }
 
         alerts.clear()
         alerts.addAll(storedAlerts)
 
         seenMessageIds.clear()
-        seenMessageIds.addAll(storedAlerts.map { it.messageId })
+        seenMessageIds.addAll(storedAlerts.map { packet -> packet.messageId })
 
         updateAlertsUi()
 
@@ -1041,7 +1044,7 @@ class MainActivity : Activity() {
 
             endpointStates.forEach { entry ->
                 val name = endpointNames[entry.key] ?: entry.key.take(6)
-                text.append("• $name → ${entry.value.name}\n")
+                text.append("- $name -> ${entry.value.name}\n")
             }
 
             peerStateText.text = text.toString()
@@ -1067,7 +1070,7 @@ class MainActivity : Activity() {
             text.append("Emergency Alerts\n\n")
 
             sortedAlerts.forEach { alert ->
-                text.append("🚨 ${alert.status} | ${priorityLabel(alert.priority)}\n")
+                text.append("ALERT: ${alert.status} | ${priorityLabel(alert.priority)}\n")
                 text.append("From: ${alert.senderName}\n")
                 text.append("Landmark: ${alert.landmark}\n")
                 text.append("Message: ${alert.message}\n")
@@ -1094,7 +1097,7 @@ class MainActivity : Activity() {
                 oldText
             }
 
-            logText.text = "$cleanOld\n• $message"
+            logText.text = "$cleanOld\n- $message"
         }
     }
 
@@ -1177,7 +1180,6 @@ data class SosPacket(
     companion object {
         fun fromJson(json: String): SosPacket {
             val obj = JSONObject(json)
-
             val status = obj.optString("status", "Info")
 
             return SosPacket(
@@ -1243,7 +1245,8 @@ interface AlertDao {
 
 @Database(
     entities = [AlertEntity::class],
-    version = 1
+    version = 1,
+    exportSchema = false
 )
 abstract class DisasterDatabase : RoomDatabase() {
 
