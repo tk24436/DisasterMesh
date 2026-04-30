@@ -3,14 +3,33 @@ package com.example.disastermesh
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
-import android.widget.*
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.TextView
+import android.widget.Toast
 import com.google.android.gms.nearby.Nearby
-import com.google.android.gms.nearby.connection.*
+import com.google.android.gms.nearby.connection.AdvertisingOptions
+import com.google.android.gms.nearby.connection.ConnectionInfo
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
+import com.google.android.gms.nearby.connection.DiscoveryOptions
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
+import com.google.android.gms.nearby.connection.Payload
+import com.google.android.gms.nearby.connection.PayloadCallback
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate
+import com.google.android.gms.nearby.connection.Strategy
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
@@ -35,8 +54,11 @@ class MainActivity : Activity() {
     private val nodeName = "Node-${UUID.randomUUID().toString().take(4)}"
 
     private val connectedEndpoints = mutableSetOf<String>()
+    private val pendingEndpoints = mutableSetOf<String>()
     private val seenMessageIds = mutableSetOf<String>()
     private val alerts = mutableListOf<SosPacket>()
+
+    private var meshStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,7 +84,15 @@ class MainActivity : Activity() {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
         }
 
-        requestPermissions(permissions.toTypedArray(), 100)
+        val missingPermissions = permissions.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isEmpty()) {
+            startMesh()
+        } else {
+            requestPermissions(missingPermissions.toTypedArray(), 100)
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -71,13 +101,34 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        startMesh()
+
+        val allGranted = grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+
+        if (allGranted) {
+            addLog("Permissions granted")
+            startMesh()
+        } else {
+            addLog("Some permissions denied. Relay may not work properly.")
+            Toast.makeText(
+                this,
+                "Allow Nearby/Bluetooth/Location permissions for relay to work",
+                Toast.LENGTH_LONG
+            ).show()
+
+            startMesh()
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun startMesh() {
+        if (meshStarted) return
+
+        meshStarted = true
+
         startAdvertising()
         startDiscovery()
+
         addLog("Offline relay started")
     }
 
@@ -116,21 +167,62 @@ class MainActivity : Activity() {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun restartMesh() {
+        connectionsClient.stopAdvertising()
+        connectionsClient.stopDiscovery()
+        connectionsClient.stopAllEndpoints()
+
+        connectedEndpoints.clear()
+        pendingEndpoints.clear()
+        updateStatusUi()
+
+        meshStarted = false
+
+        addLog("Restarting relay...")
+
+        startMesh()
+    }
+
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
+
         @SuppressLint("MissingPermission")
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            addLog("Found ${info.endpointName}")
+            if (connectedEndpoints.contains(endpointId)) {
+                return
+            }
+
+            if (pendingEndpoints.contains(endpointId)) {
+                return
+            }
+
+            /*
+             * Stability fix:
+             * Both phones advertise and discover at the same time.
+             * Without this rule, both may request connection together.
+             * This simple tie-breaker makes only one side initiate.
+             */
+            if (nodeName > info.endpointName) {
+                addLog("Found ${info.endpointName}; waiting for peer to connect")
+                return
+            }
+
+            pendingEndpoints.add(endpointId)
+
+            addLog("Found ${info.endpointName}; requesting connection")
 
             connectionsClient.requestConnection(
                 nodeName,
                 endpointId,
                 connectionLifecycleCallback
             ).addOnFailureListener {
+                pendingEndpoints.remove(endpointId)
                 addLog("Request failed: ${it.message}")
             }
         }
 
         override fun onEndpointLost(endpointId: String) {
+            pendingEndpoints.remove(endpointId)
             connectedEndpoints.remove(endpointId)
             updateStatusUi()
             addLog("Lost endpoint")
@@ -138,36 +230,47 @@ class MainActivity : Activity() {
     }
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
+
         @SuppressLint("MissingPermission")
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             addLog("Connection initiated with ${info.endpointName}")
 
             connectionsClient.acceptConnection(endpointId, payloadCallback)
                 .addOnFailureListener {
+                    pendingEndpoints.remove(endpointId)
                     addLog("Accept failed: ${it.message}")
                 }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+            pendingEndpoints.remove(endpointId)
+
             if (result.status.isSuccess) {
                 connectedEndpoints.add(endpointId)
                 updateStatusUi()
+
                 addLog("Connected to peer")
 
                 syncAlertsToEndpoint(endpointId)
             } else {
+                connectedEndpoints.remove(endpointId)
+                updateStatusUi()
+
                 addLog("Connection failed: ${result.status.statusMessage}")
             }
         }
 
         override fun onDisconnected(endpointId: String) {
+            pendingEndpoints.remove(endpointId)
             connectedEndpoints.remove(endpointId)
             updateStatusUi()
+
             addLog("Peer disconnected")
         }
     }
 
     private val payloadCallback = object : PayloadCallback() {
+
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             val bytes = payload.asBytes() ?: return
             val json = String(bytes, StandardCharsets.UTF_8)
@@ -181,7 +284,7 @@ class MainActivity : Activity() {
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // small text payload, no progress needed
+            // Small text payload. No progress UI needed.
         }
     }
 
@@ -216,6 +319,7 @@ class MainActivity : Activity() {
             alerts.add(0, packet)
 
             updateAlertsUi()
+
             addLog("Received SOS from ${packet.senderName}")
 
             if (packet.ttl > 0) {
@@ -225,7 +329,10 @@ class MainActivity : Activity() {
                 )
 
                 relayPacket(relayedPacket, fromEndpointId)
-                addLog("Relayed packet | hop ${relayedPacket.hopCount} | ttl ${relayedPacket.ttl}")
+
+                addLog(
+                    "Relayed packet | hop ${relayedPacket.hopCount} | ttl ${relayedPacket.ttl}"
+                )
             }
         }
     }
@@ -252,7 +359,9 @@ class MainActivity : Activity() {
 
     @SuppressLint("MissingPermission")
     private fun sendPacketToEndpoint(endpointId: String, packet: SosPacket) {
-        val payload = Payload.fromBytes(packet.toJson().toByteArray(StandardCharsets.UTF_8))
+        val payload = Payload.fromBytes(
+            packet.toJson().toByteArray(StandardCharsets.UTF_8)
+        )
 
         connectionsClient.sendPayload(endpointId, payload)
             .addOnFailureListener {
@@ -292,6 +401,7 @@ class MainActivity : Activity() {
         connectionText.setPadding(0, 0, 0, 20)
 
         statusSpinner = Spinner(this)
+
         val statuses = listOf(
             "Need Help",
             "Injured",
@@ -302,15 +412,20 @@ class MainActivity : Activity() {
             "Volunteer Available"
         )
 
-        statusSpinner.adapter = ArrayAdapter(
+        val adapter = ArrayAdapter(
             this,
-            android.R.layout.simple_spinner_dropdown_item,
+            android.R.layout.simple_spinner_item,
             statuses
         )
+
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+
+        statusSpinner.adapter = adapter
 
         messageInput = EditText(this)
         messageInput.hint = "Example: I am near Block C gate"
         messageInput.setText("I need help near Block C")
+        messageInput.minLines = 2
         messageInput.setPadding(16, 8, 16, 8)
 
         val sosButton = Button(this)
@@ -330,6 +445,14 @@ class MainActivity : Activity() {
             }
         }
 
+        val restartButton = Button(this)
+        restartButton.text = "RESTART RELAY"
+        restartButton.textSize = 15f
+
+        restartButton.setOnClickListener {
+            restartMesh()
+        }
+
         alertText = TextView(this)
         alertText.text = "Emergency Alerts\nNo alerts yet."
         alertText.textSize = 15f
@@ -343,11 +466,13 @@ class MainActivity : Activity() {
         logText.setPadding(0, 16, 0, 0)
 
         val scroll = ScrollView(this)
+
         val scrollContent = LinearLayout(this)
         scrollContent.orientation = LinearLayout.VERTICAL
 
         scrollContent.addView(alertText)
         scrollContent.addView(logText)
+
         scroll.addView(scrollContent)
 
         root.addView(title)
@@ -362,6 +487,14 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 140
+            )
+        )
+
+        root.addView(
+            restartButton,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                110
             )
         )
 
@@ -391,6 +524,7 @@ class MainActivity : Activity() {
             }
 
             val text = StringBuilder()
+
             text.append("Emergency Alerts\n\n")
 
             alerts.forEach { alert ->
@@ -409,6 +543,7 @@ class MainActivity : Activity() {
     private fun addLog(message: String) {
         runOnUiThread {
             val oldText = logText.text.toString()
+
             val cleanOld = if (oldText == "Network Logs\nWaiting...") {
                 "Network Logs"
             } else {
