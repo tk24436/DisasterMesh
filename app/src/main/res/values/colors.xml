@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_primary">#0D0D0F</color>
+    <color name="bg_surface">#1A1A2E</color>
+    <color name="bg_card">#232340</color>
+    <color name="bg_input">#2A2A4A</color>
+
+    <color name="accent_red">#FF3D3D</color>
+    <color name="accent_red_dark">#CC2020</color>
+    <color name="accent_orange">#FF9800</color>
+    <color name="accent_green">#4CAF50</color>
+    <color name="accent_blue">#448AFF</color>
+    <color name="accent_purple">#BB86FC</color>
+    <color name="accent_cyan">#00E5FF</color>
+
+    <color name="text_primary">#F0F0F0</color>
+    <color name="text_secondary">#9E9EB8</color>
+    <color name="text_dim">#6B6B80</color>
+
+    <color name="priority_emergency">#FF3D3D</color>
+    <color name="priority_help">#FF9800</color>
+    <color name="priority_safe">#4CAF50</color>
+    <color name="priority_info">#448AFF</color>
+
+    <color name="status_connected">#4CAF50</color>
+    <color name="status_discovering">#FFD54F</color>
+    <color name="status_disconnected">#FF3D3D</color>
+
+    <color name="nav_bar">#0F0F14</color>
+    <color name="nav_active">#FF3D3D</color>
+    <color name="nav_inactive">#6B6B80</color>
+</resources>

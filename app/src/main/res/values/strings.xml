@@ -1,3 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DisasterMesh</string>
+    <string name="app_subtitle">OmniSight-XR • Offline Emergency Mesh</string>
+
+    <string name="tab_broadcast">Broadcast</string>
+    <string name="tab_messages">Messages</string>
+    <string name="tab_ai">AI Help</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="broadcast_sos">BROADCAST SOS</string>
+    <string name="hint_landmark">Location / Landmark</string>
+    <string name="hint_message">Emergency message</string>
+    <string name="hint_dm">Type a message…</string>
+    <string name="hint_ai_query">Ask about first aid…</string>
+    <string name="hint_node_name">Enter your node name</string>
+
+    <string name="ai_title">AI First Aid</string>
+    <string name="ai_subtitle">Offline • On-Device • India</string>
+    <string name="ai_disclaimer">⚠ AI guidance is not a substitute for professional medical help. Call 102/108 for ambulance when possible.</string>
+
+    <string name="settings_save">SAVE NAME</string>
+    <string name="settings_restart">RESTART MESH</string>
+    <string name="settings_clear">CLEAR ALL DATA</string>
+    <string name="settings_demo">RUN DEMO MODE</string>
+
+    <string name="version_info">DisasterMesh v3.0\nOmniSight-XR • Part 2\nSnapdragon Multiverse Hackathon 2026</string>
 </resources>
