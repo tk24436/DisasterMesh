@@ -255,7 +255,7 @@ class MainActivity : AppCompatActivity() {
 
         val batterySaverOff = try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            !powerManager.isPowerSaveMode
+            powerManager.isPowerSaveMode == false
         } catch (e: Exception) { true }
 
         return DeviceReadiness(
