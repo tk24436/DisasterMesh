@@ -31,6 +31,7 @@ class MeshManager(
     private val handler = Handler(Looper.getMainLooper())
 
     var nodeName: String = "Node-${UUID.randomUUID().toString().take(4)}"
+    val localNodeId: String = UUID.randomUUID().toString()
 
     val connectedEndpoints = mutableSetOf<String>()
     private val pendingEndpoints = mutableSetOf<String>()
@@ -229,7 +230,8 @@ class MeshManager(
             endpointStates[endpointId] = PeerState.DISCOVERED
             notifyPeerStates()
 
-            if (nodeName > info.endpointName) {
+            // Deterministic collision avoidance using unique IDs instead of nodeName
+            if (localNodeId > endpointId) {
                 notifyLog("Found ${info.endpointName}; waiting for peer to connect")
                 return
             }
@@ -249,7 +251,7 @@ class MeshManager(
                 endpointStates[endpointId] = PeerState.FAILED
                 notifyPeerStates()
                 notifyLog("Request failed: ${it.message}")
-                scheduleMeshRetry("connection request failed")
+                // Do not restart mesh here; Nearby Connections will rediscover
             }
         }
 
@@ -279,7 +281,6 @@ class MeshManager(
                     endpointStates[endpointId] = PeerState.FAILED
                     notifyPeerStates()
                     notifyLog("Accept failed: ${it.message}")
-                    scheduleMeshRetry("accept failed")
                 }
         }
 
@@ -299,7 +300,6 @@ class MeshManager(
                 notifyConnectionCount()
                 notifyPeerStates()
                 notifyLog("Connection failed: ${result.status.statusMessage}")
-                scheduleMeshRetry("connection failed")
             }
         }
 
@@ -310,7 +310,6 @@ class MeshManager(
             notifyConnectionCount()
             notifyPeerStates()
             notifyLog("Peer ${endpointNames[endpointId] ?: ""} disconnected")
-            scheduleMeshRetry("peer disconnected")
         }
     }
 
@@ -516,7 +515,6 @@ class MeshManager(
                 endpointStates[endpointId] = PeerState.FAILED
                 notifyPeerStates()
                 notifyLog("Send failed: ${it.message}")
-                scheduleMeshRetry("send failed")
             }
     }
 

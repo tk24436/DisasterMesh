@@ -1,25 +1,28 @@
 package com.example.disastermesh
 
 import android.Manifest
-import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.location.LocationManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.PowerManager
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.example.disastermesh.data.DeviceReadiness
-import com.example.disastermesh.data.MeshDatabase
 import com.example.disastermesh.mesh.MeshManager
+import com.example.disastermesh.mesh.MeshService
 import com.example.disastermesh.ui.*
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
@@ -28,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     lateinit var meshManager: MeshManager
         private set
 
-    private lateinit var database: MeshDatabase
+    private var isBound = false
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var fragmentContainer: FrameLayout
 
@@ -44,39 +47,70 @@ class MainActivity : AppCompatActivity() {
         private const val PERMISSION_REQUEST_CODE = 100
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(className: ComponentName, service: IBinder) {
+            val binder = service as MeshService.LocalBinder
+            meshManager = binder.getService().meshManager
+            isBound = true
 
-        database = MeshDatabase.getDatabase(this)
-        meshManager = MeshManager(this, database)
+            // Load saved node name
+            val savedName = SettingsFragment.loadNodeName(this@MainActivity)
+            if (savedName != null) {
+                meshManager.nodeName = savedName
+            }
 
-        // Load saved node name
-        val savedName = SettingsFragment.loadNodeName(this)
-        if (savedName != null) {
-            meshManager.nodeName = savedName
+            buildUi()
+
+            val readiness = getDeviceReadiness()
+            if (readiness.canStart && !meshManager.meshStarted) {
+                meshManager.startMesh()
+            }
         }
 
-        requestPermissionsIfNeeded()
-        buildUi()
+        override fun onServiceDisconnected(arg0: ComponentName) {
+            isBound = false
+        }
+    }
 
-        // Load stored data
-        meshManager.loadStoredData()
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestPermissionsIfNeeded()
+        
+        // Show temporary loading UI
+        val root = LinearLayout(this).apply {
+            setBackgroundColor(Color.rgb(13, 13, 15))
+            addView(TextView(this@MainActivity).apply {
+                text = "Starting Mesh Service..."
+                setTextColor(Color.WHITE)
+            })
+        }
+        setContentView(root)
+        
+        // Start and bind to the MeshService
+        val intent = Intent(this, MeshService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
     override fun onResume() {
         super.onResume()
-
-        // Auto-start mesh if ready and not yet started
-        val readiness = getDeviceReadiness()
-        if (readiness.canStart && !meshManager.meshStarted) {
-            meshManager.startMesh()
+        if (isBound) {
+            val readiness = getDeviceReadiness()
+            if (readiness.canStart && !meshManager.meshStarted) {
+                meshManager.startMesh()
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (meshManager.meshStarted) {
-            meshManager.stopMesh()
+        if (isBound) {
+            unbindService(connection)
+            isBound = false
         }
     }
 
@@ -231,10 +265,9 @@ class MainActivity : AppCompatActivity() {
 
     // ── Device readiness (exposed for SettingsFragment) ──
 
-    @SuppressLint("MissingPermission")
     fun getDeviceReadiness(): DeviceReadiness {
         val bluetoothOn = try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
             adapter != null && adapter.isEnabled
         } catch (e: Exception) { false }
 
