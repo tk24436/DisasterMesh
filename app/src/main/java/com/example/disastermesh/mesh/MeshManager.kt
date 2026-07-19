@@ -333,9 +333,9 @@ class MeshManager(
                 notifyPeerStates()
                 notifyLog("✅ Connected to $peerName")
 
-                // Immediately exchange peer lists and sync alerts
+                // Immediately exchange heartbeats and sync alerts
                 syncAlertsToEndpoint(endpointId)
-                handler.postDelayed({ broadcastPeerList() }, 500)
+                handler.postDelayed({ sendHeartbeat() }, 500)
             } else {
                 connectedEndpoints.remove(endpointId)
                 notifyConnectionCount()
