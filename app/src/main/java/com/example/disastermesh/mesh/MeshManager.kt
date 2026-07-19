@@ -182,14 +182,14 @@ class MeshManager(
         }
     }
 
-    // ── Peer announcements (gossip protocol) ──
+    // ── Peer announcements (Heartbeat protocol) ──
 
     private fun startPeerAnnouncements() {
         stopPeerAnnouncements()
         peerAnnounceRunnable = object : Runnable {
             override fun run() {
                 if (!meshStarted) return
-                broadcastPeerList()
+                sendHeartbeat()
                 handler.postDelayed(this, PEER_ANNOUNCE_INTERVAL)
             }
         }
@@ -201,21 +201,18 @@ class MeshManager(
         peerAnnounceRunnable = null
     }
 
-    /** Broadcast our known peer list to all directly connected nodes */
-    private fun broadcastPeerList() {
+    /** Floods a unique heartbeat packet to all connected nodes */
+    private fun sendHeartbeat() {
         if (connectedEndpoints.isEmpty()) return
         
-        // We are alive!
         meshPeers[nodeName] = System.currentTimeMillis()
-
-        // Gossip the list of peers we consider alive (seen in last 60s)
-        val now = System.currentTimeMillis()
-        val activePeers = meshPeers.filter { (now - it.value) < 60_000L }.keys.toList()
+        val heartbeatId = UUID.randomUUID().toString()
+        seenMessageIds.add(heartbeatId)
 
         val json = JSONObject().apply {
-            put("type", "peers")
-            put("from", nodeName)
-            put("peers", JSONArray(activePeers))
+            put("type", "heartbeat")
+            put("sender", nodeName)
+            put("msgId", heartbeatId)
         }.toString()
 
         val payload = Payload.fromBytes(json.toByteArray(StandardCharsets.UTF_8))
@@ -224,28 +221,30 @@ class MeshManager(
         }
     }
 
-    /** Handle incoming peer list from a neighbor — merge and re-gossip if new peers found */
-    private fun handlePeerAnnouncement(json: String) {
+    /** Process a received heartbeat, deduplicate, and relay */
+    private fun handleHeartbeat(json: String, fromEndpointId: String) {
         val obj = JSONObject(json)
-        val peersArray = obj.getJSONArray("peers")
-        var newPeersFound = false
-        val now = System.currentTimeMillis()
+        val msgId = obj.getString("msgId")
+        val sender = obj.getString("sender")
+        
+        // Prevent infinite loops and duplicate processing
+        if (seenMessageIds.contains(msgId)) return
+        seenMessageIds.add(msgId)
+        
+        if (sender == nodeName) return // Ignore our own heartbeat
 
-        for (i in 0 until peersArray.length()) {
-            val peerName = peersArray.getString(i)
-            if (peerName != nodeName) {
-                if (!meshPeers.containsKey(peerName)) {
-                    newPeersFound = true
-                }
-                meshPeers[peerName] = now
-            }
+        val isNew = !meshPeers.containsKey(sender)
+        meshPeers[sender] = System.currentTimeMillis()
+        
+        if (isNew) {
+            notifyLog("Discovered $sender via mesh heartbeat")
+            notifyMeshPeers()
         }
 
-        if (newPeersFound) {
-            notifyLog("Discovered mesh peers updated")
-            notifyMeshPeers()
-            // Re-gossip our updated list so the new names propagate further
-            broadcastPeerList()
+        // Relay to other connected peers
+        val payload = Payload.fromBytes(json.toByteArray(StandardCharsets.UTF_8))
+        connectedEndpoints.filter { it != fromEndpointId }.forEach { endpointId ->
+            connectionsClient.sendPayload(endpointId, payload)
         }
     }
 
@@ -370,7 +369,7 @@ class MeshManager(
                 val obj = JSONObject(json)
                 when (obj.optString("type", "broadcast")) {
                     "dm" -> handleIncomingDm(json, endpointId)
-                    "peers" -> handlePeerAnnouncement(json)
+                    "heartbeat" -> handleHeartbeat(json, endpointId)
                     else -> handleIncomingBroadcast(json, endpointId)
                 }
             } catch (e: Exception) {
