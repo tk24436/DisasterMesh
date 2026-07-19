@@ -50,7 +50,4 @@ dependencies {
 
     // Coroutines (needed for LiteRT-LM streaming)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-
-    // LiteRT-LM for on-device LLM inference (Gemma 4 2B on Snapdragon NPU)
-    implementation("com.google.ai.edge.litertlm:litertlm-android:+")
 }
