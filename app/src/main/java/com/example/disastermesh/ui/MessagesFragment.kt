@@ -25,8 +25,8 @@ class MessagesFragment : Fragment(), MeshListener {
     private lateinit var chatHeader: TextView
     private lateinit var emptyText: TextView
     private lateinit var chatSection: LinearLayout
+    private lateinit var subtitleText: TextView
 
-    private var selectedEndpointId: String? = null
     private var selectedPeerName: String? = null
 
     private val mainActivity get() = (requireActivity() as MainActivity)
@@ -46,10 +46,16 @@ class MessagesFragment : Fragment(), MeshListener {
         }
 
         root.addView(UiUtils.makeTitle(ctx, "💬 Messages"))
-        root.addView(UiUtils.makeSubtitle(ctx, "Private • Not Relayed • Direct Only"))
+        subtitleText = TextView(ctx).apply {
+            text = "DMs relay through the mesh via hops"
+            textSize = 13f
+            setTextColor(UiColors.textDim)
+            setPadding(0, 0, 0, UiUtils.dp(ctx, 8))
+        }
+        root.addView(subtitleText)
 
         // Peer list section
-        root.addView(UiUtils.makeSectionHeader(ctx, "CONNECTED PEERS"))
+        root.addView(UiUtils.makeSectionHeader(ctx, "MESH PEERS"))
 
         peerContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -57,7 +63,7 @@ class MessagesFragment : Fragment(), MeshListener {
         root.addView(peerContainer)
 
         emptyText = TextView(ctx).apply {
-            text = "No peers connected yet.\nStart the mesh and wait for nearby devices."
+            text = "No peers found yet.\nStart the mesh and wait for nearby devices."
             textSize = 14f
             setTextColor(UiColors.textDim)
             setPadding(0, dp(8), 0, dp(16))
@@ -150,16 +156,28 @@ class MessagesFragment : Fragment(), MeshListener {
         peerContainer.removeAllViews()
         val ctx = requireContext()
         val dp = { v: Int -> UiUtils.dp(ctx, v) }
-        val peers = meshManager.getConnectedPeerList()
 
-        if (peers.isEmpty()) {
+        // Get ALL mesh peers (including multi-hop)
+        val allPeers = meshManager.getAllMeshPeers()
+        // Get directly connected peer names for showing connection type
+        val directPeerNames = meshManager.getConnectedPeerList().map { it.second }.toSet()
+
+        if (allPeers.isEmpty()) {
             emptyText.visibility = View.VISIBLE
             return
         }
 
         emptyText.visibility = View.GONE
 
-        peers.forEach { (endpointId, peerName) ->
+        // Sort: directly connected first, then mesh peers
+        val sortedPeers = allPeers.sortedWith(
+            compareByDescending<String> { directPeerNames.contains(it) }
+                .thenBy { it }
+        )
+
+        sortedPeers.forEach { peerName ->
+            val isDirect = directPeerNames.contains(peerName)
+
             val card = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -167,28 +185,43 @@ class MessagesFragment : Fragment(), MeshListener {
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 isClickable = true
                 isFocusable = true
-                val isSelected = endpointId == selectedEndpointId
-                if (isSelected) {
+                if (peerName == selectedPeerName) {
                     background = UiUtils.outlineBackground(
                         UiColors.bgCard, UiColors.accentCyan, 1, 12, ctx
                     )
                 }
             }
 
-            val dot = UiUtils.makeStatusDot(ctx, UiColors.statusConnected)
-            card.addView(dot)
+            // Green dot for direct, blue dot for mesh-relay peer
+            val dotColor = if (isDirect) UiColors.statusConnected else UiColors.accentBlue
+            card.addView(UiUtils.makeStatusDot(ctx, dotColor))
+
+            val nameCol = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
 
             val nameText = TextView(ctx).apply {
                 text = peerName
                 textSize = 15f
                 setTextColor(UiColors.textPrimary)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
-            card.addView(nameText)
+            nameCol.addView(nameText)
+
+            val routeLabel = TextView(ctx).apply {
+                text = if (isDirect) "Direct connection" else "Via mesh relay"
+                textSize = 11f
+                setTextColor(if (isDirect) UiColors.accentGreen else UiColors.accentBlue)
+            }
+            nameCol.addView(routeLabel)
+
+            card.addView(nameCol)
 
             // Unread count
-            val unread = meshManager.directMessages.count {
-                !it.isOutgoing && it.senderName == peerName && !it.isRead
+            val unread = synchronized(meshManager.directMessages) {
+                meshManager.directMessages.count {
+                    !it.isOutgoing && it.senderName == peerName && !it.isRead
+                }
             }
             if (unread > 0) {
                 val badge = TextView(ctx).apply {
@@ -211,7 +244,6 @@ class MessagesFragment : Fragment(), MeshListener {
             card.addView(arrow)
 
             card.setOnClickListener {
-                selectedEndpointId = endpointId
                 selectedPeerName = peerName
                 meshManager.database.directMessageDao().markRead(peerName)
                 openChat(peerName)
@@ -235,7 +267,7 @@ class MessagesFragment : Fragment(), MeshListener {
     }
 
     private fun refreshChat() {
-        if (!::chatContainer.isInitialized || selectedPeerName == null) return
+        if (!::chatContainer.isInitialized || selectedPeerName == null || !isBound) return
 
         chatContainer.removeAllViews()
         val ctx = requireContext()
@@ -261,7 +293,6 @@ class MessagesFragment : Fragment(), MeshListener {
             chatContainer.addView(createMessageBubble(ctx, dm))
         }
 
-        // Scroll to bottom
         chatScrollView.post { chatScrollView.fullScroll(View.FOCUS_DOWN) }
     }
 
@@ -312,11 +343,11 @@ class MessagesFragment : Fragment(), MeshListener {
     }
 
     private fun sendDm() {
-        val endpointId = selectedEndpointId ?: return
+        val target = selectedPeerName ?: return
         val content = messageInput.text.toString().trim()
-        if (content.isEmpty()) return
+        if (content.isEmpty() || !isBound) return
 
-        meshManager.sendDirectMessage(endpointId, content)
+        meshManager.sendDirectMessage(target, content)
         messageInput.text.clear()
         refreshChat()
     }
@@ -342,4 +373,7 @@ class MessagesFragment : Fragment(), MeshListener {
         refreshPeerList()
     }
 
+    override fun onMeshPeersChanged(peers: Set<String>) {
+        refreshPeerList()
+    }
 }
