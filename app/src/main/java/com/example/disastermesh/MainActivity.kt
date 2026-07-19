@@ -135,7 +135,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(title)
 
         val desc = TextView(this).apply {
-            text = "Enter your permanent Node Identity. This name will be visible to other mesh peers and cannot be changed later without clearing app data."
+            text = "Enter your Node Identity — this is how other mesh peers will see you. You can change it later in Settings."
             textSize = 14f
             setTextColor(UiColors.textSecondary)
             gravity = android.view.Gravity.CENTER

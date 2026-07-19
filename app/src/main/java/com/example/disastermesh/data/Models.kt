@@ -87,7 +87,8 @@ data class DirectMessage(
     val content: String,
     val timestamp: Long,
     val isOutgoing: Boolean,
-    val isRead: Boolean = false
+    val isRead: Boolean = false,
+    val ttl: Int = 7  // Max hops before dropping
 ) {
     fun toJson(): String {
         return JSONObject().apply {
@@ -97,6 +98,7 @@ data class DirectMessage(
             put("targetName", targetName)
             put("content", content)
             put("timestamp", timestamp)
+            put("ttl", ttl)
         }.toString()
     }
 
@@ -109,7 +111,8 @@ data class DirectMessage(
                 targetName = obj.optString("targetName", ""),
                 content = obj.getString("content"),
                 timestamp = obj.getLong("timestamp"),
-                isOutgoing = isOutgoing
+                isOutgoing = isOutgoing,
+                ttl = obj.optInt("ttl", 7)
             )
         }
     }

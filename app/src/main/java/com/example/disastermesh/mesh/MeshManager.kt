@@ -52,7 +52,22 @@ class MeshManager(
     // Tracks Name -> LastSeenTimestamp
     val meshPeers = ConcurrentHashMap<String, Long>()
 
-    val seenMessageIds = ConcurrentHashMap.newKeySet<String>()
+    // Bounded set to prevent memory leak on long-running deployments.
+    // Evicts oldest entry when size exceeds maxSize.
+    private class BoundedSet(private val maxSize: Int) {
+        private val set = LinkedHashSet<String>()
+        @Synchronized fun add(id: String): Boolean {
+            if (set.contains(id)) return false
+            if (set.size >= maxSize) set.remove(set.iterator().next())
+            set.add(id)
+            return true
+        }
+        @Synchronized fun contains(id: String) = set.contains(id)
+        @Synchronized fun addAll(ids: Collection<String>) = ids.forEach { add(it) }
+    }
+
+    val seenMessageIds = BoundedSet(500)   // DMs + SOS alerts
+    private val seenHeartbeatIds = BoundedSet(200)  // Heartbeats only
     val alerts = mutableListOf<SosPacket>()
     val directMessages = mutableListOf<DirectMessage>()
 
@@ -69,6 +84,11 @@ class MeshManager(
     // Peer announcement interval
     private var peerAnnounceRunnable: Runnable? = null
     private val PEER_ANNOUNCE_INTERVAL = 10_000L // every 10 seconds
+
+    // Staleness check — proactively push Online→Offline transitions to UI
+    private var stalenessRunnable: Runnable? = null
+    private val PEER_OFFLINE_THRESHOLD = 45_000L
+    private val STALENESS_CHECK_INTERVAL = 15_000L
 
     fun addListener(listener: MeshListener) {
         synchronized(listeners) {
@@ -114,6 +134,7 @@ class MeshManager(
         startAdvertising()
         startDiscovery()
         startPeerAnnouncements()
+        startStalenessCheck()
 
         notifyLog("Mesh started as $nodeName")
         notifyMeshStatus()
@@ -126,6 +147,7 @@ class MeshManager(
         connectionsClient.stopAllEndpoints()
 
         stopPeerAnnouncements()
+        stopStalenessCheck()
         isAdvertising = false
         isDiscovering = false
         meshStarted = false
@@ -201,13 +223,38 @@ class MeshManager(
         peerAnnounceRunnable = null
     }
 
+    private fun startStalenessCheck() {
+        stopStalenessCheck()
+        stalenessRunnable = object : Runnable {
+            private var prevOnlineSet = emptySet<String>()
+            override fun run() {
+                if (!meshStarted) return
+                val now = System.currentTimeMillis()
+                val currentOnline = meshPeers.keys
+                    .filter { it != nodeName && (now - (meshPeers[it] ?: 0)) < PEER_OFFLINE_THRESHOLD }
+                    .toSet()
+                if (currentOnline != prevOnlineSet) {
+                    prevOnlineSet = currentOnline
+                    notifyMeshPeers()
+                }
+                handler.postDelayed(this, STALENESS_CHECK_INTERVAL)
+            }
+        }
+        handler.postDelayed(stalenessRunnable!!, STALENESS_CHECK_INTERVAL)
+    }
+
+    private fun stopStalenessCheck() {
+        stalenessRunnable?.let { handler.removeCallbacks(it) }
+        stalenessRunnable = null
+    }
+
     /** Floods a unique heartbeat packet to all connected nodes */
     private fun sendHeartbeat() {
         if (connectedEndpoints.isEmpty()) return
         
         meshPeers[nodeName] = System.currentTimeMillis()
         val heartbeatId = UUID.randomUUID().toString()
-        seenMessageIds.add(heartbeatId)
+        seenHeartbeatIds.add(heartbeatId)
 
         val json = JSONObject().apply {
             put("type", "heartbeat")
@@ -227,9 +274,8 @@ class MeshManager(
         val msgId = obj.getString("msgId")
         val sender = obj.getString("sender")
         
-        // Prevent infinite loops and duplicate processing
-        if (seenMessageIds.contains(msgId)) return
-        seenMessageIds.add(msgId)
+        // Prevent infinite loops using the dedicated heartbeat dedup set
+        if (!seenHeartbeatIds.add(msgId)) return
         
         if (sender == nodeName) return // Ignore our own heartbeat
 
@@ -413,10 +459,13 @@ class MeshManager(
                 database.directMessageDao().insert(dm.toEntity())
                 notifyDm(dm)
                 notifyLog("DM from ${dm.senderName}")
+            } else if (dm.ttl > 0) {
+                // Not for us and TTL remaining — relay it (decrement TTL)
+                val relayed = dm.copy(ttl = dm.ttl - 1)
+                relayDm(relayed.toJson(), fromEndpointId)
+                notifyLog("Relaying DM from ${dm.senderName} → ${dm.targetName} (TTL=${relayed.ttl})")
             } else {
-                // Not for us — relay it to all connected peers (except sender)
-                relayDm(json, fromEndpointId)
-                notifyLog("Relaying DM from ${dm.senderName} → ${dm.targetName}")
+                notifyLog("DM from ${dm.senderName} dropped — TTL exhausted")
             }
         }
     }

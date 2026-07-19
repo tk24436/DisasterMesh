@@ -189,33 +189,43 @@ class MessagesFragment : Fragment(), MeshListener {
     private fun refreshPeerList() {
         if (!::peerContainer.isInitialized || !isBound) return
 
-        peerContainer.removeAllViews()
-        val ctx = requireContext()
-        val dp = { v: Int -> UiUtils.dp(ctx, v) }
-
-        // Get ALL mesh peers (including multi-hop)
         val allPeers = meshManager.getAllMeshPeers()
-        
+
         if (allPeers.isEmpty()) {
+            peerContainer.removeAllViews()
             emptyText.visibility = View.VISIBLE
             return
         }
 
-        emptyText.visibility = View.GONE
-        
-        val allDMs = meshManager.database.directMessageDao().getAll()
-        val latestMsgTime = mutableMapOf<String, Long>()
-        for (peer in allPeers) {
-            val peerDms = allDMs.filter { it.senderName == peer || it.targetName == peer }
-            latestMsgTime[peer] = peerDms.maxOfOrNull { it.timestamp } ?: 0L
-        }
+        // Run DB query off main thread, then update UI
+        Thread {
+            val allDMs = meshManager.database.directMessageDao().getAll()
+            val latestMsgTime = mutableMapOf<String, Long>()
+            for (peer in allPeers) {
+                val peerDms = allDMs.filter { it.senderName == peer || it.targetName == peer }
+                latestMsgTime[peer] = peerDms.maxOfOrNull { it.timestamp } ?: 0L
+            }
+            val sortedPeers = allPeers.sortedWith(
+                compareByDescending<String> { meshManager.isPeerOnline(it) }
+                    .thenByDescending { latestMsgTime[it] ?: 0L }
+                    .thenBy { it }
+            )
 
-        // Sort: Online first, then by latest message time
-        val sortedPeers = allPeers.sortedWith(
-            compareByDescending<String> { meshManager.isPeerOnline(it) }
-                .thenByDescending { latestMsgTime[it] ?: 0L }
-                .thenBy { it }
-        )
+            // Post UI updates back to main thread
+            requireActivity().runOnUiThread {
+                if (!isAdded) return@runOnUiThread
+                buildPeerCards(sortedPeers)
+            }
+        }.start()
+    }
+
+    private fun buildPeerCards(sortedPeers: List<String>) {
+        if (!isAdded) return
+        val ctx = requireContext()
+        val dp = { v: Int -> UiUtils.dp(ctx, v) }
+
+        peerContainer.removeAllViews()
+        emptyText.visibility = View.GONE
 
         sortedPeers.forEach { peerName ->
             val isOnline = meshManager.isPeerOnline(peerName)
@@ -232,7 +242,6 @@ class MessagesFragment : Fragment(), MeshListener {
                         UiColors.bgCard, UiColors.accentCyan, 1, 12, ctx
                     )
                 }
-                setOnClickListener { openChat(peerName) }
             }
 
             // Green dot for online, grey for offline
@@ -260,7 +269,7 @@ class MessagesFragment : Fragment(), MeshListener {
 
             card.addView(nameCol)
 
-            // Unread count
+            // Unread count badge
             val unread = synchronized(meshManager.directMessages) {
                 meshManager.directMessages.count {
                     !it.isOutgoing && it.senderName == peerName && !it.isRead
