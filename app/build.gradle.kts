@@ -12,13 +12,20 @@ android {
         applicationId = "com.example.disastermesh"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "4.0"
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            // Required: DSP skel libs must be unpacked to disk for Hexagon RPC
+            useLegacyPackaging = true
+        }
     }
 }
 
@@ -40,4 +47,10 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.cardview:cardview:1.0.0")
+
+    // Coroutines (needed for LiteRT-LM streaming)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // LiteRT-LM for on-device LLM inference (Gemma 4 2B on Snapdragon NPU)
+    implementation("com.google.ai.edge.litert:litert-lm:0.1.0")
 }
