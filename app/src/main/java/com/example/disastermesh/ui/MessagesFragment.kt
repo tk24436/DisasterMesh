@@ -25,6 +25,7 @@ class MessagesFragment : Fragment(), MeshListener {
     private lateinit var chatHeader: TextView
     private lateinit var emptyText: TextView
     private lateinit var chatSection: LinearLayout
+    private lateinit var peerSection: LinearLayout
     private lateinit var subtitleText: TextView
 
     private var selectedPeerName: String? = null
@@ -45,22 +46,37 @@ class MessagesFragment : Fragment(), MeshListener {
             setPadding(dp(16), dp(16), dp(16), dp(8))
         }
 
-        root.addView(UiUtils.makeTitle(ctx, "💬 Messages"))
+        peerSection = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        }
+        
+        peerSection.addView(UiUtils.makeTitle(ctx, "💬 Messages"))
         subtitleText = TextView(ctx).apply {
             text = "DMs relay through the mesh via hops"
             textSize = 13f
             setTextColor(UiColors.textDim)
             setPadding(0, 0, 0, UiUtils.dp(ctx, 8))
         }
-        root.addView(subtitleText)
+        peerSection.addView(subtitleText)
 
         // Peer list section
-        root.addView(UiUtils.makeSectionHeader(ctx, "MESH PEERS"))
+        peerSection.addView(UiUtils.makeSectionHeader(ctx, "MESH PEERS"))
 
         peerContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
         }
-        root.addView(peerContainer)
+        
+        val peerScroll = ScrollView(ctx).apply {
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            addView(peerContainer)
+        }
+        peerSection.addView(peerScroll)
 
         emptyText = TextView(ctx).apply {
             text = "No peers found yet.\nStart the mesh and wait for nearby devices."
@@ -68,7 +84,9 @@ class MessagesFragment : Fragment(), MeshListener {
             setTextColor(UiColors.textDim)
             setPadding(0, dp(8), 0, dp(16))
         }
-        root.addView(emptyText)
+        peerSection.addView(emptyText)
+        
+        root.addView(peerSection)
 
         // Chat section
         chatSection = LinearLayout(ctx).apply {
@@ -76,13 +94,29 @@ class MessagesFragment : Fragment(), MeshListener {
             visibility = View.GONE
         }
 
+        val headerRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, dp(8))
+        }
+        
+        val backBtn = TextView(ctx).apply {
+            text = "←"
+            textSize = 24f
+            setTextColor(UiColors.textDim)
+            setPadding(0, 0, dp(16), 0)
+            isClickable = true
+            setOnClickListener { closeChat() }
+        }
+        headerRow.addView(backBtn)
+        
         chatHeader = TextView(ctx).apply {
             textSize = 15f
             setTextColor(UiColors.accentCyan)
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-            setPadding(0, dp(12), 0, dp(8))
         }
-        chatSection.addView(chatHeader)
+        headerRow.addView(chatHeader)
+        chatSection.addView(headerRow)
 
         val chatScroll = ScrollView(ctx).apply {
             isVerticalScrollBarEnabled = false
@@ -140,7 +174,9 @@ class MessagesFragment : Fragment(), MeshListener {
         meshManager.addListener(this)
         refreshPeerList()
         if (selectedPeerName != null) {
-            refreshChat()
+            openChat(selectedPeerName!!)
+        } else {
+            closeChat()
         }
     }
 
@@ -261,9 +297,21 @@ class MessagesFragment : Fragment(), MeshListener {
     private fun openChat(peerName: String) {
         if (!::chatSection.isInitialized) return
 
+        peerSection.visibility = View.GONE
         chatSection.visibility = View.VISIBLE
         chatHeader.text = "💬 Chat with $peerName"
         refreshChat()
+    }
+    
+    private fun closeChat() {
+        if (!::chatSection.isInitialized) return
+        
+        selectedPeerName = null
+        chatSection.visibility = View.GONE
+        peerSection.visibility = View.VISIBLE
+        // Clear keyboard focus if needed
+        messageInput.clearFocus()
+        refreshPeerList()
     }
 
     private fun refreshChat() {

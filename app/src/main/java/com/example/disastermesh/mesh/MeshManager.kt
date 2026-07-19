@@ -34,6 +34,11 @@ class MeshManager(
     private val handler = Handler(Looper.getMainLooper())
 
     var nodeName: String = "Node-${UUID.randomUUID().toString().take(4)}"
+        set(value) {
+            meshPeers.remove(field)
+            field = value
+            if (meshStarted) meshPeers.add(value)
+        }
 
     // Direct connections
     val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()

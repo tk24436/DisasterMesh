@@ -210,9 +210,18 @@ class SettingsFragment : Fragment(), MeshListener {
         val prefs = ctx.getSharedPreferences("disastermesh_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("node_name", name).apply()
 
-        if (isBound) meshManager.nodeName = name
-
-        Toast.makeText(ctx, "Node name saved: $name", Toast.LENGTH_SHORT).show()
+        if (isBound) {
+            val oldName = meshManager.nodeName
+            if (oldName != name) {
+                meshManager.nodeName = name
+                meshManager.restartMesh()
+                Toast.makeText(ctx, "Name updated to $name. Restarting mesh...", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(ctx, "Name is already $name", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(ctx, "Node name saved: $name", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun refreshReadiness() {
