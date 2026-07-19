@@ -54,7 +54,7 @@ class MeshManager(
 
     // Bounded set to prevent memory leak on long-running deployments.
     // Evicts oldest entry when size exceeds maxSize.
-    private class BoundedSet(private val maxSize: Int) {
+    class BoundedSet(private val maxSize: Int) {
         private val set = LinkedHashSet<String>()
         @Synchronized fun add(id: String): Boolean {
             if (set.contains(id)) return false
@@ -64,6 +64,7 @@ class MeshManager(
         }
         @Synchronized fun contains(id: String) = set.contains(id)
         @Synchronized fun addAll(ids: Collection<String>) = ids.forEach { add(it) }
+        @Synchronized fun clear() = set.clear()
     }
 
     val seenMessageIds = BoundedSet(500)   // DMs + SOS alerts
