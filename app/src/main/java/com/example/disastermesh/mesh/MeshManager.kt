@@ -591,7 +591,10 @@ class MeshManager(
         notifyLog("DEMO: Emergency SOS broadcast")
 
         // Simulate mesh peers
-        meshPeers.addAll(listOf("Demo-Rescue-1", "Demo-Volunteer-2", "Demo-Node-B", "Demo-Node-C"))
+        val now = System.currentTimeMillis()
+        listOf("Demo-Rescue-1", "Demo-Volunteer-2", "Demo-Node-B", "Demo-Node-C").forEach { 
+            meshPeers[it] = now 
+        }
         notifyMeshPeers()
 
         handler.postDelayed({
