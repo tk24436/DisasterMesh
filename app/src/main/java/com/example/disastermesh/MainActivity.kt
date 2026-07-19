@@ -58,13 +58,13 @@ class MainActivity : AppCompatActivity() {
             val savedName = SettingsFragment.loadNodeName(this@MainActivity)
             if (savedName != null) {
                 meshManager.nodeName = savedName
-            }
-
-            buildUi()
-
-            val readiness = getDeviceReadiness()
-            if (readiness.canStart && !meshManager.meshStarted) {
-                meshManager.startMesh()
+                buildUi()
+                val readiness = getDeviceReadiness()
+                if (readiness.canStart && !meshManager.meshStarted) {
+                    meshManager.startMesh()
+                }
+            } else {
+                showOnboardingUi()
             }
         }
 
@@ -113,6 +113,76 @@ class MainActivity : AppCompatActivity() {
             unbindService(connection)
             isBound = false
         }
+    }
+
+    private fun showOnboardingUi() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(13, 13, 15))
+            setPadding(UiUtils.dp(this@MainActivity, 32), UiUtils.dp(this@MainActivity, 64), UiUtils.dp(this@MainActivity, 32), UiUtils.dp(this@MainActivity, 32))
+            gravity = android.view.Gravity.CENTER
+        }
+
+        val title = TextView(this).apply {
+            text = "Welcome to OmniSight-XR"
+            textSize = 24f
+            setTextColor(UiColors.textPrimary)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, 0, 0, UiUtils.dp(this@MainActivity, 16))
+        }
+        root.addView(title)
+
+        val desc = TextView(this).apply {
+            text = "Enter your permanent Node Identity. This name will be visible to other mesh peers and cannot be changed later without clearing app data."
+            textSize = 14f
+            setTextColor(UiColors.textSecondary)
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, 0, 0, UiUtils.dp(this@MainActivity, 32))
+        }
+        root.addView(desc)
+
+        val nameInput = android.widget.EditText(this).apply {
+            hint = "e.g. RescueTeam-Alpha"
+            textSize = 16f
+            setTextColor(UiColors.textPrimary)
+            setHintTextColor(UiColors.textDim)
+            background = UiUtils.roundedBackground(UiColors.bgInput, 10, this@MainActivity)
+            setPadding(UiUtils.dp(this@MainActivity, 16), UiUtils.dp(this@MainActivity, 16), UiUtils.dp(this@MainActivity, 16), UiUtils.dp(this@MainActivity, 16))
+            gravity = android.view.Gravity.CENTER
+        }
+        root.addView(nameInput)
+
+        val saveBtn = UiUtils.makeStyledButton(this, "JOIN MESH NETWORK", UiColors.accentBlue)
+        val btnParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = UiUtils.dp(this@MainActivity, 32)
+        }
+        
+        saveBtn.setOnClickListener {
+            val name = nameInput.text.toString().trim()
+            if (name.isBlank()) {
+                Toast.makeText(this, "Name cannot be empty", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            
+            // Save it
+            val prefs = getSharedPreferences("disastermesh_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("node_name", name).apply()
+            
+            meshManager.nodeName = name
+            
+            // Start the app
+            buildUi()
+            val readiness = getDeviceReadiness()
+            if (readiness.canStart && !meshManager.meshStarted) {
+                meshManager.startMesh()
+            }
+        }
+        root.addView(saveBtn, btnParams)
+
+        setContentView(root)
     }
 
     private fun buildUi() {

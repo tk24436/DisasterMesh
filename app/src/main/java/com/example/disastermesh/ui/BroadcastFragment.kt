@@ -19,9 +19,7 @@ import java.util.Locale
 class BroadcastFragment : Fragment(), MeshListener {
 
     private lateinit var connectionStatusText: TextView
-    private lateinit var peerStateText: TextView
     private lateinit var alertContainer: LinearLayout
-    private lateinit var logText: TextView
     private lateinit var statusSpinner: Spinner
     private lateinit var landmarkInput: EditText
     private lateinit var messageInput: EditText
@@ -61,21 +59,7 @@ class BroadcastFragment : Fragment(), MeshListener {
         headerRow.addView(connectionStatusText)
         root.addView(headerRow)
 
-        val nodeName = TextView(ctx).apply {
-            text = if (isBound) "Node: ${meshManager.nodeName}" else "Node: Starting..."
-            textSize = 13f
-            setTextColor(UiColors.textDim)
-            setPadding(0, 0, 0, dp(8))
-        }
-        root.addView(nodeName)
-
-        peerStateText = TextView(ctx).apply {
-            textSize = 12f
-            setTextColor(UiColors.textSecondary)
-            setPadding(0, 0, 0, dp(12))
-            visibility = View.GONE
-        }
-        root.addView(peerStateText)
+        // Removed nodeName and peerStateText from here
 
         // Input section
         root.addView(UiUtils.makeSectionHeader(ctx, "⚡ SEND ALERT"))
@@ -127,14 +111,7 @@ class BroadcastFragment : Fragment(), MeshListener {
         }
         scrollContent.addView(alertContainer)
 
-        scrollContent.addView(UiUtils.makeSectionHeader(ctx, "🔗 NETWORK LOG"))
-
-        logText = TextView(ctx).apply {
-            textSize = 12f
-            setTextColor(UiColors.textDim)
-            text = "Waiting for mesh activity..."
-        }
-        scrollContent.addView(logText)
+        // Removed NETWORK LOG section
 
         root.addView(UiUtils.wrapInScroll(ctx, scrollContent))
 
@@ -147,7 +124,6 @@ class BroadcastFragment : Fragment(), MeshListener {
         meshManager.addListener(this)
         refreshAlerts()
         updateConnectionStatus(meshManager.connectedEndpoints.size)
-        updatePeerStates(meshManager.endpointStates, meshManager.endpointNames)
     }
 
     override fun onPause() {
@@ -275,36 +251,7 @@ class BroadcastFragment : Fragment(), MeshListener {
         )
     }
 
-    private fun updatePeerStates(states: Map<String, PeerState>, names: Map<String, String>) {
-        if (!::peerStateText.isInitialized) return
-
-        if (states.isEmpty()) {
-            peerStateText.visibility = View.GONE
-            return
-        }
-
-        peerStateText.visibility = View.VISIBLE
-        val sb = StringBuilder()
-        states.forEach { (id, state) ->
-            val name = names[id] ?: id.take(6)
-            val icon = when (state) {
-                PeerState.CONNECTED -> "🟢"
-                PeerState.CONNECTING -> "🟡"
-                PeerState.DISCOVERED -> "🔵"
-                else -> "🔴"
-            }
-            sb.appendLine("$icon $name → ${state.name}")
-        }
-        peerStateText.text = sb.toString().trimEnd()
-    }
-
-    private fun addLogLine(message: String) {
-        if (!::logText.isInitialized) return
-        val current = logText.text.toString()
-        val clean = if (current.startsWith("Waiting")) "" else current
-        val lines = clean.split("\n").takeLast(30)
-        logText.text = (lines + "• $message").joinToString("\n")
-    }
+    // Removed updatePeerStates and addLogLine
 
     private fun formatTime(timestamp: Long): String {
         return SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(timestamp))
@@ -313,7 +260,7 @@ class BroadcastFragment : Fragment(), MeshListener {
     // ── MeshListener callbacks ──
 
     override fun onLogMessage(message: String) {
-        addLogLine(message)
+        // Logs disabled in UI
     }
 
     override fun onAlertReceived(packet: SosPacket) {
@@ -325,6 +272,6 @@ class BroadcastFragment : Fragment(), MeshListener {
     }
 
     override fun onPeerStatesChanged(states: Map<String, PeerState>, names: Map<String, String>) {
-        updatePeerStates(states, names)
+        // Peer states removed from UI
     }
 }

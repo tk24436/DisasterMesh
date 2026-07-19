@@ -16,7 +16,6 @@ import com.example.disastermesh.mesh.MeshListener
 
 class SettingsFragment : Fragment(), MeshListener {
 
-    private lateinit var nameInput: EditText
     private lateinit var readinessContainer: LinearLayout
     private lateinit var meshStatusText: TextView
     private lateinit var peerCountText: TextView
@@ -57,32 +56,24 @@ class SettingsFragment : Fragment(), MeshListener {
         }
         nameCard.addView(nameLabel)
 
-        nameInput = EditText(ctx).apply {
-            textSize = 16f
-            setTextColor(UiColors.textPrimary)
-            setHintTextColor(UiColors.textDim)
-            hint = "Enter your node name"
-            background = UiUtils.roundedBackground(UiColors.bgInput, 10, ctx)
+        val nameDisplay = TextView(ctx).apply {
+            text = loadNodeName(ctx) ?: meshManager.nodeName
+            textSize = 18f
+            setTextColor(UiColors.accentCyan)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = UiUtils.roundedBackground(UiColors.bgInput, 10, ctx)
         }
-        nameCard.addView(nameInput)
+        nameCard.addView(nameDisplay)
 
-        val currentName = loadNodeName(ctx)
-        if (currentName != null) {
-            nameInput.setText(currentName)
-        } else if (isBound) {
-            nameInput.setText(meshManager.nodeName)
-        } else {
-            nameInput.setText("Node")
+        val lockLabel = TextView(ctx).apply {
+            text = "🔒 Identity locked for this session"
+            textSize = 12f
+            setTextColor(UiColors.textDim)
+            setPadding(0, dp(8), 0, 0)
+            gravity = Gravity.CENTER
         }
-
-        val saveButton = UiUtils.makeStyledButton(ctx, "💾 SAVE NAME", UiColors.accentBlue)
-        saveButton.setOnClickListener { saveName() }
-        val saveBtnParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        saveBtnParams.topMargin = dp(8)
-        nameCard.addView(saveButton, saveBtnParams)
+        nameCard.addView(lockLabel)
 
         scrollContent.addView(nameCard)
 
@@ -199,30 +190,7 @@ class SettingsFragment : Fragment(), MeshListener {
         meshManager.removeListener(this)
     }
 
-    private fun saveName() {
-        val name = nameInput.text.toString().trim()
-        if (name.isBlank()) {
-            Toast.makeText(requireContext(), "Name cannot be empty", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val ctx = requireContext()
-        val prefs = ctx.getSharedPreferences("disastermesh_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("node_name", name).apply()
-
-        if (isBound) {
-            val oldName = meshManager.nodeName
-            if (oldName != name) {
-                meshManager.nodeName = name
-                meshManager.restartMesh()
-                Toast.makeText(ctx, "Name updated to $name. Restarting mesh...", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(ctx, "Name is already $name", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            Toast.makeText(ctx, "Node name saved: $name", Toast.LENGTH_SHORT).show()
-        }
-    }
+    // Removed saveName() since name is locked
 
     private fun refreshReadiness() {
         if (!::readinessContainer.isInitialized) return
