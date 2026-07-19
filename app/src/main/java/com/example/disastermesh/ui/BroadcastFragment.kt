@@ -19,6 +19,8 @@ import java.util.Locale
 class BroadcastFragment : Fragment(), MeshListener {
 
     private lateinit var connectionStatusText: TextView
+    private lateinit var peerStateContainer: LinearLayout
+    private lateinit var peerStateText: TextView
     private lateinit var alertContainer: LinearLayout
     private lateinit var statusSpinner: Spinner
     private lateinit var landmarkInput: EditText
@@ -51,15 +53,51 @@ class BroadcastFragment : Fragment(), MeshListener {
         title.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         headerRow.addView(title)
 
+        val statusContainer = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            background = UiUtils.roundedBackground(UiColors.bgCard, 12, ctx)
+            isClickable = true
+            setOnClickListener { togglePeerStates() }
+        }
+
         connectionStatusText = TextView(ctx).apply {
             textSize = 13f
             setTextColor(UiColors.accentGreen)
             gravity = Gravity.END
+            setPadding(0, 0, dp(4), 0)
         }
-        headerRow.addView(connectionStatusText)
+        statusContainer.addView(connectionStatusText)
+        
+        val expandIcon = TextView(ctx).apply {
+            text = "▼"
+            textSize = 10f
+            setTextColor(UiColors.textDim)
+        }
+        statusContainer.addView(expandIcon)
+        
+        headerRow.addView(statusContainer)
         root.addView(headerRow)
 
-        // Removed nodeName and peerStateText from here
+        peerStateContainer = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            background = UiUtils.roundedBackground(UiColors.bgCard, 8, ctx)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            visibility = View.GONE
+            val params = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            params.bottomMargin = dp(12)
+            layoutParams = params
+        }
+        
+        peerStateText = TextView(ctx).apply {
+            textSize = 12f
+            setTextColor(UiColors.textSecondary)
+        }
+        peerStateContainer.addView(peerStateText)
+        root.addView(peerStateContainer)
 
         // Input section
         root.addView(UiUtils.makeSectionHeader(ctx, "⚡ SEND ALERT"))
@@ -124,6 +162,7 @@ class BroadcastFragment : Fragment(), MeshListener {
         meshManager.addListener(this)
         refreshAlerts()
         updateConnectionStatus(meshManager.connectedEndpoints.size)
+        updatePeerStates(meshManager.endpointStates, meshManager.endpointNames)
     }
 
     override fun onPause() {
@@ -251,7 +290,32 @@ class BroadcastFragment : Fragment(), MeshListener {
         )
     }
 
-    // Removed updatePeerStates and addLogLine
+    private fun togglePeerStates() {
+        if (!::peerStateContainer.isInitialized) return
+        peerStateContainer.visibility = if (peerStateContainer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+    }
+
+    private fun updatePeerStates(states: Map<String, PeerState>, names: Map<String, String>) {
+        if (!::peerStateText.isInitialized) return
+
+        if (states.isEmpty()) {
+            peerStateText.text = "No direct connections."
+            return
+        }
+
+        val sb = StringBuilder()
+        states.forEach { (id, state) ->
+            val name = names[id] ?: id.take(6)
+            val icon = when (state) {
+                PeerState.CONNECTED -> "🟢"
+                PeerState.CONNECTING -> "🟡"
+                PeerState.DISCOVERED -> "🔵"
+                else -> "🔴"
+            }
+            sb.appendLine("$icon $name → ${state.name}")
+        }
+        peerStateText.text = sb.toString().trimEnd()
+    }
 
     private fun formatTime(timestamp: Long): String {
         return SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(timestamp))
@@ -272,6 +336,6 @@ class BroadcastFragment : Fragment(), MeshListener {
     }
 
     override fun onPeerStatesChanged(states: Map<String, PeerState>, names: Map<String, String>) {
-        // Peer states removed from UI
+        updatePeerStates(states, names)
     }
 }

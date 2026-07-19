@@ -100,8 +100,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (isBound) {
+            val savedName = SettingsFragment.loadNodeName(this@MainActivity)
             val readiness = getDeviceReadiness()
-            if (readiness.canStart && !meshManager.meshStarted) {
+            if (savedName != null && readiness.canStart && !meshManager.meshStarted) {
                 meshManager.startMesh()
             }
         }

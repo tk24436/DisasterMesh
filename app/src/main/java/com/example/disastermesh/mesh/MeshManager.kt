@@ -37,7 +37,7 @@ class MeshManager(
         set(value) {
             meshPeers.remove(field)
             field = value
-            if (meshStarted) meshPeers.add(value)
+            if (meshStarted) meshPeers[value] = System.currentTimeMillis()
         }
 
     // Direct connections
@@ -49,8 +49,8 @@ class MeshManager(
         get() = connectedEndpoints.associateWith { PeerState.CONNECTED }
 
     // Mesh-wide peer discovery (gossip protocol)
-    // All peers known across the entire mesh, including multi-hop
-    val meshPeers = ConcurrentHashMap.newKeySet<String>()
+    // Tracks Name -> LastSeenTimestamp
+    val meshPeers = ConcurrentHashMap<String, Long>()
 
     val seenMessageIds = ConcurrentHashMap.newKeySet<String>()
     val alerts = mutableListOf<SosPacket>()
@@ -91,7 +91,7 @@ class MeshManager(
     private fun notifyDm(m: DirectMessage) = forEachListener { it.onDirectMessageReceived(m) }
     private fun notifyMeshStatus() { val s = meshStarted; forEachListener { it.onMeshStatusChanged(s) } }
     private fun notifyConnectionCount() { val c = connectedEndpoints.size; forEachListener { it.onConnectionCountChanged(c) } }
-    private fun notifyMeshPeers() { val p = meshPeers.toSet(); forEachListener { it.onMeshPeersChanged(p) } }
+    private fun notifyMeshPeers() { val p = meshPeers.keys.toSet(); forEachListener { it.onMeshPeersChanged(p) } }
     private fun notifyPeerStates() {
         // Build a clean map of only connected peers
         val states = mutableMapOf<String, PeerState>()
@@ -109,7 +109,7 @@ class MeshManager(
     fun startMesh() {
         if (meshStarted) return
         meshStarted = true
-        meshPeers.add(nodeName) // We are always a known peer
+        meshPeers[nodeName] = System.currentTimeMillis() // We are always a known peer
 
         startAdvertising()
         startDiscovery()
@@ -204,11 +204,18 @@ class MeshManager(
     /** Broadcast our known peer list to all directly connected nodes */
     private fun broadcastPeerList() {
         if (connectedEndpoints.isEmpty()) return
+        
+        // We are alive!
+        meshPeers[nodeName] = System.currentTimeMillis()
+
+        // Gossip the list of peers we consider alive (seen in last 60s)
+        val now = System.currentTimeMillis()
+        val activePeers = meshPeers.filter { (now - it.value) < 60_000L }.keys.toList()
 
         val json = JSONObject().apply {
             put("type", "peers")
             put("from", nodeName)
-            put("peers", JSONArray(meshPeers.toList()))
+            put("peers", JSONArray(activePeers))
         }.toString()
 
         val payload = Payload.fromBytes(json.toByteArray(StandardCharsets.UTF_8))
@@ -222,16 +229,20 @@ class MeshManager(
         val obj = JSONObject(json)
         val peersArray = obj.getJSONArray("peers")
         var newPeersFound = false
+        val now = System.currentTimeMillis()
 
         for (i in 0 until peersArray.length()) {
             val peerName = peersArray.getString(i)
-            if (peerName != nodeName && meshPeers.add(peerName)) {
-                newPeersFound = true
+            if (peerName != nodeName) {
+                if (!meshPeers.containsKey(peerName)) {
+                    newPeersFound = true
+                }
+                meshPeers[peerName] = now
             }
         }
 
         if (newPeersFound) {
-            notifyLog("Discovered ${meshPeers.size - 1} peers across mesh")
+            notifyLog("Discovered mesh peers updated")
             notifyMeshPeers()
             // Re-gossip our updated list so the new names propagate further
             broadcastPeerList()
@@ -246,7 +257,7 @@ class MeshManager(
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val peerName = info.endpointName
             endpointNames[endpointId] = peerName
-            meshPeers.add(peerName)
+            meshPeers[peerName] = System.currentTimeMillis()
 
             // Already connected to this specific endpoint
             if (connectedEndpoints.contains(endpointId)) return
@@ -294,7 +305,7 @@ class MeshManager(
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             val peerName = info.endpointName
             endpointNames[endpointId] = peerName
-            meshPeers.add(peerName)
+            meshPeers[peerName] = System.currentTimeMillis()
             pendingEndpoints.add(endpointId)
 
             // Reject only if we're already CONNECTED to this exact same name
@@ -555,7 +566,13 @@ class MeshManager(
 
     /** Get all mesh peers (including multi-hop), excluding self */
     fun getAllMeshPeers(): Set<String> {
-        return meshPeers.filter { it != nodeName }.toSet()
+        return meshPeers.keys.filter { it != nodeName }.toSet()
+    }
+    
+    /** Check if a peer has been seen in the last 45 seconds */
+    fun isPeerOnline(peerName: String): Boolean {
+        val lastSeen = meshPeers[peerName] ?: return false
+        return (System.currentTimeMillis() - lastSeen) < 45_000L
     }
 
     // ── Demo ──

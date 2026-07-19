@@ -195,24 +195,30 @@ class MessagesFragment : Fragment(), MeshListener {
 
         // Get ALL mesh peers (including multi-hop)
         val allPeers = meshManager.getAllMeshPeers()
-        // Get directly connected peer names for showing connection type
-        val directPeerNames = meshManager.getConnectedPeerList().map { it.second }.toSet()
-
+        
         if (allPeers.isEmpty()) {
             emptyText.visibility = View.VISIBLE
             return
         }
 
         emptyText.visibility = View.GONE
+        
+        val allDMs = meshManager.database.directMessageDao().getAll()
+        val latestMsgTime = mutableMapOf<String, Long>()
+        for (peer in allPeers) {
+            val peerDms = allDMs.filter { it.senderName == peer || it.targetName == peer }
+            latestMsgTime[peer] = peerDms.maxOfOrNull { it.timestamp } ?: 0L
+        }
 
-        // Sort: directly connected first, then mesh peers
+        // Sort: Online first, then by latest message time
         val sortedPeers = allPeers.sortedWith(
-            compareByDescending<String> { directPeerNames.contains(it) }
+            compareByDescending<String> { meshManager.isPeerOnline(it) }
+                .thenByDescending { latestMsgTime[it] ?: 0L }
                 .thenBy { it }
         )
 
         sortedPeers.forEach { peerName ->
-            val isDirect = directPeerNames.contains(peerName)
+            val isOnline = meshManager.isPeerOnline(peerName)
 
             val card = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -226,10 +232,11 @@ class MessagesFragment : Fragment(), MeshListener {
                         UiColors.bgCard, UiColors.accentCyan, 1, 12, ctx
                     )
                 }
+                setOnClickListener { openChat(peerName) }
             }
 
-            // Green dot for direct, blue dot for mesh-relay peer
-            val dotColor = if (isDirect) UiColors.statusConnected else UiColors.accentBlue
+            // Green dot for online, grey for offline
+            val dotColor = if (isOnline) UiColors.statusConnected else UiColors.textDim
             card.addView(UiUtils.makeStatusDot(ctx, dotColor))
 
             val nameCol = LinearLayout(ctx).apply {
@@ -240,14 +247,14 @@ class MessagesFragment : Fragment(), MeshListener {
             val nameText = TextView(ctx).apply {
                 text = peerName
                 textSize = 15f
-                setTextColor(UiColors.textPrimary)
+                setTextColor(if (isOnline) UiColors.textPrimary else UiColors.textSecondary)
             }
             nameCol.addView(nameText)
 
             val routeLabel = TextView(ctx).apply {
-                text = if (isDirect) "Direct connection" else "Via mesh relay"
+                text = if (isOnline) "Online" else "Offline"
                 textSize = 11f
-                setTextColor(if (isDirect) UiColors.accentGreen else UiColors.accentBlue)
+                setTextColor(if (isOnline) UiColors.accentGreen else UiColors.textDim)
             }
             nameCol.addView(routeLabel)
 
