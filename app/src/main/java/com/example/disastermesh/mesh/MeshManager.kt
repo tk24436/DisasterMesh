@@ -279,12 +279,12 @@ class MeshManager(
         }
 
         override fun onEndpointLost(endpointId: String) {
+            // Critical fix: DO NOT remove from connectedEndpoints here!
+            // onEndpointLost only means the Bluetooth advertisement stopped 
+            // (e.g. they switched to WiFi Direct). The actual connection is still alive!
+            // Connection drops are handled exclusively by onDisconnected.
             pendingEndpoints.remove(endpointId)
-            if (connectedEndpoints.remove(endpointId)) {
-                notifyConnectionCount()
-                notifyPeerStates()
-            }
-            notifyLog("Lost ${endpointNames[endpointId] ?: endpointId.take(6)}")
+            notifyLog("Lost advertisement for ${endpointNames[endpointId] ?: endpointId.take(6)}")
         }
     }
 
