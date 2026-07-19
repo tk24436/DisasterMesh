@@ -39,6 +39,9 @@ class MeshManager(
     val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
     val endpointNames = ConcurrentHashMap<String, String>()
+    
+    val endpointStates: Map<String, PeerState>
+        get() = connectedEndpoints.associateWith { PeerState.CONNECTED }
 
     // Mesh-wide peer discovery (gossip protocol)
     // All peers known across the entire mesh, including multi-hop
