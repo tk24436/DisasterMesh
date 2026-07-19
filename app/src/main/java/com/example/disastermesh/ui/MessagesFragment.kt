@@ -29,7 +29,9 @@ class MessagesFragment : Fragment(), MeshListener {
     private var selectedEndpointId: String? = null
     private var selectedPeerName: String? = null
 
-    private val meshManager get() = (requireActivity() as MainActivity).meshManager
+    private val mainActivity get() = (requireActivity() as MainActivity)
+    private val meshManager get() = mainActivity.meshManager
+    private val isBound get() = mainActivity.isBound
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -128,6 +130,7 @@ class MessagesFragment : Fragment(), MeshListener {
 
     override fun onResume() {
         super.onResume()
+        if (!isBound) return
         meshManager.addListener(this)
         refreshPeerList()
         if (selectedPeerName != null) {
@@ -137,11 +140,12 @@ class MessagesFragment : Fragment(), MeshListener {
 
     override fun onPause() {
         super.onPause()
+        if (!isBound) return
         meshManager.removeListener(this)
     }
 
     private fun refreshPeerList() {
-        if (!::peerContainer.isInitialized) return
+        if (!::peerContainer.isInitialized || !isBound) return
 
         peerContainer.removeAllViews()
         val ctx = requireContext()

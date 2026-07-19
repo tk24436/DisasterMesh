@@ -21,7 +21,9 @@ class SettingsFragment : Fragment(), MeshListener {
     private lateinit var meshStatusText: TextView
     private lateinit var peerCountText: TextView
 
-    private val meshManager get() = (requireActivity() as MainActivity).meshManager
+    private val mainActivity get() = (requireActivity() as MainActivity)
+    private val meshManager get() = mainActivity.meshManager
+    private val isBound get() = mainActivity.isBound
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -68,8 +70,10 @@ class SettingsFragment : Fragment(), MeshListener {
         val currentName = loadNodeName(ctx)
         if (currentName != null) {
             nameInput.setText(currentName)
-        } else {
+        } else if (isBound) {
             nameInput.setText(meshManager.nodeName)
+        } else {
+            nameInput.setText("Node")
         }
 
         val saveButton = UiUtils.makeStyledButton(ctx, "💾 SAVE NAME", UiColors.accentBlue)
@@ -183,6 +187,7 @@ class SettingsFragment : Fragment(), MeshListener {
 
     override fun onResume() {
         super.onResume()
+        if (!isBound) return
         meshManager.addListener(this)
         refreshReadiness()
         refreshMeshStatus()
@@ -190,6 +195,7 @@ class SettingsFragment : Fragment(), MeshListener {
 
     override fun onPause() {
         super.onPause()
+        if (!isBound) return
         meshManager.removeListener(this)
     }
 
@@ -204,7 +210,7 @@ class SettingsFragment : Fragment(), MeshListener {
         val prefs = ctx.getSharedPreferences("disastermesh_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("node_name", name).apply()
 
-        meshManager.nodeName = name
+        if (isBound) meshManager.nodeName = name
 
         Toast.makeText(ctx, "Node name saved: $name", Toast.LENGTH_SHORT).show()
     }
@@ -250,7 +256,7 @@ class SettingsFragment : Fragment(), MeshListener {
     }
 
     private fun refreshMeshStatus() {
-        if (!::meshStatusText.isInitialized) return
+        if (!::meshStatusText.isInitialized || !isBound) return
 
         val isRunning = meshManager.meshStarted
         meshStatusText.text = if (isRunning) "🟢 Mesh Active" else "🔴 Mesh Inactive"

@@ -31,7 +31,8 @@ class MainActivity : AppCompatActivity() {
     lateinit var meshManager: MeshManager
         private set
 
-    private var isBound = false
+    var isBound = false
+        private set
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var fragmentContainer: FrameLayout
 
@@ -248,12 +249,12 @@ class MainActivity : AppCompatActivity() {
 
         if (requestCode == PERMISSION_REQUEST_CODE) {
             val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            if (allGranted) {
+            if (allGranted && isBound) {
                 val readiness = getDeviceReadiness()
                 if (readiness.canStart && !meshManager.meshStarted) {
                     meshManager.startMesh()
                 }
-            } else {
+            } else if (!allGranted) {
                 Toast.makeText(
                     this,
                     "Some permissions were denied. Mesh may not work correctly.",

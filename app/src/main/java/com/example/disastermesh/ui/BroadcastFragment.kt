@@ -26,7 +26,9 @@ class BroadcastFragment : Fragment(), MeshListener {
     private lateinit var landmarkInput: EditText
     private lateinit var messageInput: EditText
 
-    private val meshManager get() = (requireActivity() as MainActivity).meshManager
+    private val mainActivity get() = (requireActivity() as MainActivity)
+    private val meshManager get() = mainActivity.meshManager
+    private val isBound get() = mainActivity.isBound
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -60,7 +62,7 @@ class BroadcastFragment : Fragment(), MeshListener {
         root.addView(headerRow)
 
         val nodeName = TextView(ctx).apply {
-            text = "Node: ${meshManager.nodeName}"
+            text = if (isBound) "Node: ${meshManager.nodeName}" else "Node: Starting..."
             textSize = 13f
             setTextColor(UiColors.textDim)
             setPadding(0, 0, 0, dp(8))
@@ -141,6 +143,7 @@ class BroadcastFragment : Fragment(), MeshListener {
 
     override fun onResume() {
         super.onResume()
+        if (!isBound) return
         meshManager.addListener(this)
         refreshAlerts()
         updateConnectionStatus(meshManager.connectedEndpoints.size)
@@ -149,10 +152,12 @@ class BroadcastFragment : Fragment(), MeshListener {
 
     override fun onPause() {
         super.onPause()
+        if (!isBound) return
         meshManager.removeListener(this)
     }
 
     private fun sendBroadcast() {
+        if (!isBound) return
         val status = statusSpinner.selectedItem.toString()
         val message = messageInput.text.toString().trim()
         val landmark = landmarkInput.text.toString().trim()
@@ -167,7 +172,7 @@ class BroadcastFragment : Fragment(), MeshListener {
     }
 
     private fun refreshAlerts() {
-        if (!::alertContainer.isInitialized) return
+        if (!::alertContainer.isInitialized || !isBound) return
 
         alertContainer.removeAllViews()
         val ctx = requireContext()
