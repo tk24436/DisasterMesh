@@ -114,6 +114,49 @@ class SettingsFragment : Fragment(), MeshListener {
         }
         meshCard.addView(peerCountText)
 
+        // Direct peers list
+        val directPeersHeader = TextView(ctx).apply {
+            text = "🔗 Direct Connections:"
+            textSize = 13f
+            setTextColor(UiColors.accentGreen)
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        meshCard.addView(directPeersHeader)
+
+        val directPeersList = TextView(ctx).apply {
+            tag = "direct_peers_list"
+            textSize = 12f
+            setTextColor(UiColors.textSecondary)
+            setPadding(dp(8), 0, 0, dp(4))
+        }
+        meshCard.addView(directPeersList)
+
+        // Relay peers list
+        val relayPeersHeader = TextView(ctx).apply {
+            text = "↪ Relay Connections (via other devices):"
+            textSize = 13f
+            setTextColor(UiColors.accentOrange)
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        meshCard.addView(relayPeersHeader)
+
+        val relayPeersList = TextView(ctx).apply {
+            tag = "relay_peers_list"
+            textSize = 12f
+            setTextColor(UiColors.textSecondary)
+            setPadding(dp(8), 0, 0, dp(4))
+        }
+        meshCard.addView(relayPeersList)
+
+        // Nostr status
+        val nostrStatus = TextView(ctx).apply {
+            tag = "nostr_status"
+            textSize = 13f
+            setTextColor(UiColors.textSecondary)
+            setPadding(0, dp(6), 0, dp(2))
+        }
+        meshCard.addView(nostrStatus)
+
         scrollContent.addView(meshCard)
 
         // Action buttons
@@ -271,8 +314,44 @@ class SettingsFragment : Fragment(), MeshListener {
         meshStatusText.text = if (isRunning) "🟢 Mesh Active" else "🔴 Mesh Inactive"
         meshStatusText.setTextColor(if (isRunning) UiColors.accentGreen else UiColors.accentRed)
 
-        val count = meshManager.connectedEndpoints.size
-        peerCountText.text = "Connected peers: $count"
+        val directCount = meshManager.connectedEndpoints.size
+        val maxConn = com.example.disastermesh.mesh.MeshManager.MAX_CONNECTIONS
+        peerCountText.text = "Direct connections: $directCount / $maxConn"
+
+        // Direct peers
+        val directNames = meshManager.getDirectPeerNames()
+        val directView = view?.findViewWithTag<TextView>("direct_peers_list")
+        directView?.text = if (directNames.isEmpty()) "None" else directNames.joinToString("\n") { "  • $it" }
+
+        // Relay peers
+        val relayNames = meshManager.getRelayPeers()
+        val relayView = view?.findViewWithTag<TextView>("relay_peers_list")
+        relayView?.text = if (relayNames.isEmpty()) "None" else relayNames.joinToString("\n") { peer ->
+            val hops = meshManager.hopsTo(peer)
+            val hopLabel = if (hops < Int.MAX_VALUE) "$hops hops" else "unknown hops"
+            "  • $peer ($hopLabel)"
+        }
+
+        // Nostr status
+        val nostrView = view?.findViewWithTag<TextView>("nostr_status")
+        val nostr = meshManager.nostrService
+        if (nostr != null) {
+            val relayCount = nostr.getConnectedRelayCount()
+            val hasNet = nostr.hasInternet()
+            if (hasNet && relayCount > 0) {
+                nostrView?.text = "📡 Nostr: $relayCount relay(s) connected"
+                nostrView?.setTextColor(UiColors.accentGreen)
+            } else if (hasNet) {
+                nostrView?.text = "📡 Nostr: Connecting to relays..."
+                nostrView?.setTextColor(UiColors.accentOrange)
+            } else {
+                nostrView?.text = "📡 Nostr: No internet (offline mode)"
+                nostrView?.setTextColor(UiColors.textDim)
+            }
+        } else {
+            nostrView?.text = "📡 Nostr: Not initialized"
+            nostrView?.setTextColor(UiColors.textDim)
+        }
     }
 
     override fun onConnectionCountChanged(count: Int) {
@@ -280,6 +359,14 @@ class SettingsFragment : Fragment(), MeshListener {
     }
 
     override fun onMeshStatusChanged(started: Boolean) {
+        refreshMeshStatus()
+    }
+
+    override fun onTopologyChanged(graph: Map<String, Set<String>>) {
+        refreshMeshStatus()
+    }
+
+    override fun onMeshPeersChanged(peers: Set<String>) {
         refreshMeshStatus()
     }
 

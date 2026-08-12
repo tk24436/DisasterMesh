@@ -21,6 +21,7 @@ interface MeshListener {
     fun onPeerStatesChanged(states: Map<String, PeerState>, names: Map<String, String>) {}
     fun onMeshStatusChanged(started: Boolean) {}
     fun onMeshPeersChanged(peers: Set<String>) {}
+    fun onTopologyChanged(graph: Map<String, Set<String>>) {}
 }
 
 class MeshManager(
@@ -40,13 +41,42 @@ class MeshManager(
             if (meshStarted) meshPeers[value] = System.currentTimeMillis()
         }
 
+    // ── Smart Topology Constants ──
+    companion object {
+        /** Maximum number of direct Nearby Connections to maintain */
+        const val MAX_CONNECTIONS = 4
+
+        /** Minimum connections before self-healing kicks in */
+        const val MIN_CONNECTIONS = 2
+
+        /** How many hops away a peer can be before we consider a direct connection unnecessary */
+        const val REDUNDANCY_HOP_THRESHOLD = 2
+
+        /** Delay between connection retry attempts (exponential backoff base) */
+        const val BACKOFF_BASE_MS = 3000L
+
+        /** Maximum backoff delay */
+        const val BACKOFF_MAX_MS = 30000L
+    }
+
     // Direct connections
     val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
     val endpointNames = ConcurrentHashMap<String, String>()
-    
+
     val endpointStates: Map<String, PeerState>
         get() = connectedEndpoints.associateWith { PeerState.CONNECTED }
+
+    // ── Network Topology Graph ──
+    // Maps node name -> set of directly connected peer names
+    // This is the "mental map" each device builds from heartbeats
+    val networkGraph = ConcurrentHashMap<String, Set<String>>()
+
+    // Track which peers we intentionally skipped (redundant)
+    private val skippedEndpoints = ConcurrentHashMap.newKeySet<String>()
+
+    // Backoff tracker: endpointId -> retry count
+    private val retryCount = ConcurrentHashMap<String, Int>()
 
     // Mesh-wide peer discovery (gossip protocol)
     // Tracks Name -> LastSeenTimestamp
@@ -91,6 +121,9 @@ class MeshManager(
     private val PEER_OFFLINE_THRESHOLD = 45_000L
     private val STALENESS_CHECK_INTERVAL = 15_000L
 
+    // ── Nostr bridge ──
+    var nostrService: NostrService? = null
+
     fun addListener(listener: MeshListener) {
         synchronized(listeners) {
             if (!listeners.contains(listener)) listeners.add(listener)
@@ -108,11 +141,18 @@ class MeshManager(
     }
 
     private fun notifyLog(msg: String) = forEachListener { it.onLogMessage(msg) }
+
+    /** Public entry point for external components (e.g. NostrService) to emit log messages */
+    fun logFromExternal(msg: String) = notifyLog(msg)
     private fun notifyAlert(p: SosPacket) = forEachListener { it.onAlertReceived(p) }
     private fun notifyDm(m: DirectMessage) = forEachListener { it.onDirectMessageReceived(m) }
     private fun notifyMeshStatus() { val s = meshStarted; forEachListener { it.onMeshStatusChanged(s) } }
     private fun notifyConnectionCount() { val c = connectedEndpoints.size; forEachListener { it.onConnectionCountChanged(c) } }
     private fun notifyMeshPeers() { val p = meshPeers.keys.toSet(); forEachListener { it.onMeshPeersChanged(p) } }
+    private fun notifyTopology() {
+        val snapshot = networkGraph.mapValues { it.value.toSet() }
+        forEachListener { it.onTopologyChanged(snapshot) }
+    }
     private fun notifyPeerStates() {
         // Build a clean map of only connected peers
         val states = mutableMapOf<String, PeerState>()
@@ -156,10 +196,14 @@ class MeshManager(
         connectedEndpoints.clear()
         pendingEndpoints.clear()
         endpointNames.clear()
+        skippedEndpoints.clear()
+        retryCount.clear()
+        networkGraph.clear()
 
         notifyConnectionCount()
         notifyPeerStates()
         notifyMeshStatus()
+        notifyTopology()
         notifyLog("Mesh stopped")
     }
 
@@ -205,7 +249,73 @@ class MeshManager(
         }
     }
 
-    // ── Peer announcements (Heartbeat protocol) ──
+    // ── Smart Topology: Graph helpers ──
+
+    /**
+     * BFS to find the shortest hop count from [startNode] to [targetNode]
+     * using the known networkGraph. Returns Int.MAX_VALUE if unreachable.
+     */
+    fun hopsTo(targetNode: String, startNode: String = nodeName): Int {
+        if (startNode == targetNode) return 0
+        val visited = mutableSetOf(startNode)
+        val queue = ArrayDeque<Pair<String, Int>>() // (node, depth)
+        queue.add(startNode to 0)
+
+        while (queue.isNotEmpty()) {
+            val (current, depth) = queue.removeFirst()
+            val neighbors = networkGraph[current] ?: continue
+            for (neighbor in neighbors) {
+                if (neighbor == targetNode) return depth + 1
+                if (visited.add(neighbor)) {
+                    queue.add(neighbor to depth + 1)
+                }
+            }
+        }
+        return Int.MAX_VALUE
+    }
+
+    /**
+     * Decide whether to accept a new direct connection to [peerName].
+     * Returns true if the connection is needed, false if redundant.
+     */
+    private fun shouldConnect(peerName: String): Boolean {
+        // Always connect if we're below minimum
+        if (connectedEndpoints.size < MIN_CONNECTIONS) return true
+
+        // Don't exceed max
+        if (connectedEndpoints.size >= MAX_CONNECTIONS) {
+            notifyLog("⛔ At max connections ($MAX_CONNECTIONS), skipping $peerName")
+            return false
+        }
+
+        // Check if already reachable within REDUNDANCY_HOP_THRESHOLD
+        val hops = hopsTo(peerName)
+        if (hops <= REDUNDANCY_HOP_THRESHOLD) {
+            notifyLog("↪ $peerName already reachable in $hops hops, skipping direct connect")
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * Get peers reachable only via relay (multi-hop), not directly connected.
+     */
+    fun getRelayPeers(): Set<String> {
+        val directNames = connectedEndpoints.mapNotNull { endpointNames[it] }.toSet()
+        return meshPeers.keys.filter { peer ->
+            peer != nodeName && peer !in directNames
+        }.toSet()
+    }
+
+    /**
+     * Get directly connected peer names.
+     */
+    fun getDirectPeerNames(): Set<String> {
+        return connectedEndpoints.mapNotNull { endpointNames[it] }.toSet()
+    }
+
+    // ── Peer announcements (Enhanced Heartbeat protocol) ──
 
     private fun startPeerAnnouncements() {
         stopPeerAnnouncements()
@@ -238,6 +348,19 @@ class MeshManager(
                     prevOnlineSet = currentOnline
                     notifyMeshPeers()
                 }
+
+                // Prune stale entries from the topology graph
+                val staleNodes = meshPeers.entries
+                    .filter { (now - it.value) >= PEER_OFFLINE_THRESHOLD && it.key != nodeName }
+                    .map { it.key }
+                staleNodes.forEach { staleNode ->
+                    networkGraph.remove(staleNode)
+                    networkGraph.forEach { (_, neighbors) ->
+                        (neighbors as? MutableSet)?.remove(staleNode)
+                    }
+                }
+                if (staleNodes.isNotEmpty()) notifyTopology()
+
                 handler.postDelayed(this, STALENESS_CHECK_INTERVAL)
             }
         }
@@ -249,18 +372,30 @@ class MeshManager(
         stalenessRunnable = null
     }
 
-    /** Floods a unique heartbeat packet to all connected nodes */
+    /**
+     * Enhanced heartbeat: includes our direct connections so peers
+     * can build a topology map of the entire network.
+     */
     private fun sendHeartbeat() {
         if (connectedEndpoints.isEmpty()) return
-        
+
         meshPeers[nodeName] = System.currentTimeMillis()
+
+        // Update our own entry in the network graph
+        val myDirectPeers = connectedEndpoints.mapNotNull { endpointNames[it] }.toSet()
+        networkGraph[nodeName] = myDirectPeers
+
         val heartbeatId = UUID.randomUUID().toString()
         seenHeartbeatIds.add(heartbeatId)
+
+        val peersArray = JSONArray()
+        myDirectPeers.forEach { peersArray.put(it) }
 
         val json = JSONObject().apply {
             put("type", "heartbeat")
             put("sender", nodeName)
             put("msgId", heartbeatId)
+            put("peers", peersArray)  // NEW: include direct peer list
         }.toString()
 
         val payload = Payload.fromBytes(json.toByteArray(StandardCharsets.UTF_8))
@@ -269,20 +404,38 @@ class MeshManager(
         }
     }
 
-    /** Process a received heartbeat, deduplicate, and relay */
+    /**
+     * Process a received heartbeat: build the topology map, deduplicate, and relay.
+     */
     private fun handleHeartbeat(json: String, fromEndpointId: String) {
         val obj = JSONObject(json)
         val msgId = obj.getString("msgId")
         val sender = obj.getString("sender")
-        
+
         // Prevent infinite loops using the dedicated heartbeat dedup set
         if (!seenHeartbeatIds.add(msgId)) return
-        
+
         if (sender == nodeName) return // Ignore our own heartbeat
 
         val isNew = !meshPeers.containsKey(sender)
         meshPeers[sender] = System.currentTimeMillis()
-        
+
+        // Parse the peer list and update the topology graph
+        val peersArray = obj.optJSONArray("peers")
+        if (peersArray != null) {
+            val peerSet = mutableSetOf<String>()
+            for (i in 0 until peersArray.length()) {
+                val peerName = peersArray.getString(i)
+                peerSet.add(peerName)
+                // Also mark these peers as "seen" (they exist in the mesh)
+                if (!meshPeers.containsKey(peerName)) {
+                    meshPeers[peerName] = System.currentTimeMillis()
+                }
+            }
+            networkGraph[sender] = peerSet
+            notifyTopology()
+        }
+
         if (isNew) {
             notifyLog("Discovered $sender via mesh heartbeat")
             notifyMeshPeers()
@@ -295,7 +448,7 @@ class MeshManager(
         }
     }
 
-    // ── Connection callbacks ──
+    // ── Connection callbacks (Smart Routing) ──
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
 
@@ -314,8 +467,19 @@ class MeshManager(
             // Already have a pending request for this endpoint
             if (pendingEndpoints.contains(endpointId)) return
 
-            // ALWAYS try to connect — no collision avoidance
-            // Nearby Connections handles simultaneous requests gracefully
+            // ── SMART ROUTING: Check if we actually need this connection ──
+            if (!shouldConnect(peerName)) {
+                skippedEndpoints.add(endpointId)
+                return
+            }
+
+            // ── COLLISION AVOIDANCE: Only the lexicographically smaller node initiates ──
+            // This prevents both nodes from requesting each other simultaneously
+            if (nodeName > peerName) {
+                notifyLog("⏳ Waiting for $peerName to initiate (collision avoidance)")
+                return
+            }
+
             pendingEndpoints.add(endpointId)
             notifyLog("Connecting to $peerName...")
 
@@ -323,15 +487,23 @@ class MeshManager(
                 .addOnFailureListener {
                     pendingEndpoints.remove(endpointId)
                     notifyLog("Request to $peerName failed: ${it.message}")
-                    // Retry once after a short delay
-                    handler.postDelayed({
-                        if (meshStarted && !connectedEndpoints.contains(endpointId) && !pendingEndpoints.contains(endpointId)) {
-                            notifyLog("Retrying connection to $peerName...")
-                            pendingEndpoints.add(endpointId)
-                            connectionsClient.requestConnection(nodeName, endpointId, connectionLifecycleCallback)
-                                .addOnFailureListener { pendingEndpoints.remove(endpointId) }
-                        }
-                    }, 3000)
+
+                    // Exponential backoff retry
+                    val retries = retryCount.getOrDefault(endpointId, 0)
+                    if (retries < 3) {
+                        retryCount[endpointId] = retries + 1
+                        val delay = minOf(BACKOFF_BASE_MS * (1L shl retries), BACKOFF_MAX_MS)
+                        handler.postDelayed({
+                            if (meshStarted && !connectedEndpoints.contains(endpointId)
+                                && !pendingEndpoints.contains(endpointId)
+                                && shouldConnect(peerName)) {
+                                notifyLog("Retrying connection to $peerName (attempt ${retries + 2})...")
+                                pendingEndpoints.add(endpointId)
+                                connectionsClient.requestConnection(nodeName, endpointId, connectionLifecycleCallback)
+                                    .addOnFailureListener { pendingEndpoints.remove(endpointId) }
+                            }
+                        }, delay)
+                    }
                 }
         }
 
@@ -341,6 +513,7 @@ class MeshManager(
             // (e.g. they switched to WiFi Direct). The actual connection is still alive!
             // Connection drops are handled exclusively by onDisconnected.
             pendingEndpoints.remove(endpointId)
+            skippedEndpoints.remove(endpointId)
             notifyLog("Lost advertisement for ${endpointNames[endpointId] ?: endpointId.take(6)}")
         }
     }
@@ -362,6 +535,16 @@ class MeshManager(
                 return
             }
 
+            // ── SMART ROUTING: Check if we should accept incoming connections ──
+            // For incoming connections (where the other side initiated), we are more lenient:
+            // only reject if we are truly at max AND the peer is already reachable.
+            if (connectedEndpoints.size >= MAX_CONNECTIONS && hopsTo(peerName) <= REDUNDANCY_HOP_THRESHOLD) {
+                notifyLog("Rejecting $peerName — at max connections and already reachable")
+                connectionsClient.rejectConnection(endpointId)
+                pendingEndpoints.remove(endpointId)
+                return
+            }
+
             notifyLog("Accepting connection from $peerName")
             connectionsClient.acceptConnection(endpointId, payloadCallback)
                 .addOnFailureListener {
@@ -372,13 +555,19 @@ class MeshManager(
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             pendingEndpoints.remove(endpointId)
+            retryCount.remove(endpointId)
             val peerName = endpointNames[endpointId] ?: "peer"
 
             if (result.status.isSuccess) {
                 connectedEndpoints.add(endpointId)
                 notifyConnectionCount()
                 notifyPeerStates()
-                notifyLog("✅ Connected to $peerName")
+                notifyLog("✅ Connected to $peerName (${connectedEndpoints.size}/$MAX_CONNECTIONS)")
+
+                // Update our topology entry immediately
+                val myDirectPeers = connectedEndpoints.mapNotNull { endpointNames[it] }.toSet()
+                networkGraph[nodeName] = myDirectPeers
+                notifyTopology()
 
                 // Immediately exchange heartbeats and sync alerts
                 syncAlertsToEndpoint(endpointId)
@@ -398,6 +587,23 @@ class MeshManager(
             notifyConnectionCount()
             notifyPeerStates()
             notifyLog("$peerName disconnected")
+
+            // Update our topology entry
+            val myDirectPeers = connectedEndpoints.mapNotNull { endpointNames[it] }.toSet()
+            networkGraph[nodeName] = myDirectPeers
+            notifyTopology()
+
+            // ── SELF-HEALING: If we've dropped below minimum, actively seek new connections ──
+            if (meshStarted && connectedEndpoints.size < MIN_CONNECTIONS) {
+                notifyLog("🔧 Self-healing: only ${connectedEndpoints.size} connections, seeking more...")
+                // Clear skipped endpoints so we reconsider them
+                skippedEndpoints.clear()
+                // Restart discovery to find new peers
+                if (!isDiscovering) {
+                    isDiscovering = false
+                    startDiscovery()
+                }
+            }
             // Don't remove from meshPeers — they're still reachable via other routes
         }
     }
@@ -444,6 +650,9 @@ class MeshManager(
                 val relayed = received.copy(hopCount = received.hopCount + 1, ttl = received.ttl - 1, isRelayed = true)
                 enqueueRelay(relayed, exceptEndpointId = fromEndpointId)
             }
+
+            // Bridge to Nostr if available
+            nostrService?.publishAlert(received)
         }
     }
 
@@ -467,6 +676,50 @@ class MeshManager(
                 notifyLog("Relaying DM from ${dm.senderName} → ${dm.targetName} (TTL=${relayed.ttl})")
             } else {
                 notifyLog("DM from ${dm.senderName} dropped — TTL exhausted")
+            }
+        }
+    }
+
+    /**
+     * Called by NostrService when it receives an alert from the Nostr network.
+     * Injects it into the local mesh as if it was received from a peer.
+     */
+    fun receiveFromNostr(packet: SosPacket) {
+        handler.post {
+            if (seenMessageIds.contains(packet.messageId)) return@post
+            seenMessageIds.add(packet.messageId)
+            synchronized(alerts) { alerts.add(0, packet) }
+            database.alertDao().insertAlert(packet.toEntity())
+            notifyAlert(packet)
+            notifyLog("📡 Alert from Nostr: ${packet.senderName}: ${packet.status}")
+
+            // Relay into the local mesh
+            if (packet.ttl > 0) {
+                val relayed = packet.copy(hopCount = packet.hopCount + 1, ttl = packet.ttl - 1, isRelayed = true)
+                enqueueRelay(relayed, exceptEndpointId = null)
+            }
+        }
+    }
+
+    /**
+     * Called by NostrService when it receives a DM from the Nostr network.
+     */
+    fun receiveFromNostr(dm: DirectMessage) {
+        handler.post {
+            if (seenMessageIds.contains(dm.messageId)) return@post
+            seenMessageIds.add(dm.messageId)
+
+            if (dm.targetName == nodeName) {
+                synchronized(directMessages) { directMessages.add(dm) }
+                database.directMessageDao().insert(dm.toEntity())
+                notifyDm(dm)
+                notifyLog("📡 DM from Nostr: ${dm.senderName}")
+            } else if (dm.ttl > 0) {
+                // Relay into the local mesh
+                val relayed = dm.copy(ttl = dm.ttl - 1)
+                val payload = Payload.fromBytes(relayed.toJson().toByteArray(StandardCharsets.UTF_8))
+                connectedEndpoints.forEach { connectionsClient.sendPayload(it, payload) }
+                notifyLog("📡 Relaying Nostr DM ${dm.senderName} → ${dm.targetName}")
             }
         }
     }
@@ -497,6 +750,9 @@ class MeshManager(
         notifyAlert(packet)
         enqueueRelay(packet, exceptEndpointId = null)
         notifyLog("Broadcast ${priorityLabel(packet.priority)}: $status")
+
+        // Bridge to Nostr
+        nostrService?.publishAlert(packet)
     }
 
     /**
@@ -532,6 +788,9 @@ class MeshManager(
             }
             notifyLog("DM sent to $targetName (via mesh relay)")
         }
+
+        // Also bridge to Nostr
+        nostrService?.publishDm(dm)
     }
 
     // ── Relay queue ──
@@ -639,12 +898,21 @@ class MeshManager(
         notifyAlert(demoPacket)
         notifyLog("DEMO: Emergency SOS broadcast")
 
-        // Simulate mesh peers
+        // Simulate mesh peers and topology
         val now = System.currentTimeMillis()
         listOf("Demo-Rescue-1", "Demo-Volunteer-2", "Demo-Node-B", "Demo-Node-C").forEach { 
             meshPeers[it] = now 
         }
+
+        // Simulate a topology graph
+        networkGraph[nodeName] = setOf("Demo-Rescue-1", "Demo-Volunteer-2")
+        networkGraph["Demo-Rescue-1"] = setOf(nodeName, "Demo-Node-B")
+        networkGraph["Demo-Volunteer-2"] = setOf(nodeName, "Demo-Node-C")
+        networkGraph["Demo-Node-B"] = setOf("Demo-Rescue-1", "Demo-Node-C")
+        networkGraph["Demo-Node-C"] = setOf("Demo-Volunteer-2", "Demo-Node-B")
+
         notifyMeshPeers()
+        notifyTopology()
 
         handler.postDelayed({
             val p2 = SosPacket(

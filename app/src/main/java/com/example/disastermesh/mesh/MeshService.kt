@@ -21,6 +21,8 @@ class MeshService : Service() {
     private val binder = LocalBinder()
     lateinit var meshManager: MeshManager
         private set
+    lateinit var nostrService: NostrService
+        private set
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -35,6 +37,12 @@ class MeshService : Service() {
         val database = MeshDatabase.getDatabase(this)
         meshManager = MeshManager(this, database)
         meshManager.loadStoredData()
+
+        // Initialize Nostr relay bridge
+        nostrService = NostrService(this, meshManager)
+        nostrService.init()
+        meshManager.nostrService = nostrService
+        nostrService.start()
         
         acquireLocks()
         startForegroundService()
@@ -49,6 +57,9 @@ class MeshService : Service() {
     }
 
     override fun onDestroy() {
+        if (::nostrService.isInitialized) {
+            nostrService.stop()
+        }
         if (meshManager.meshStarted) {
             meshManager.stopMesh()
         }
